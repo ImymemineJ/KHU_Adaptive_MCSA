@@ -2,14 +2,19 @@
 
 ![STM32](https://img.shields.io/badge/STM32-F103RB-blue.svg) ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
+# STM32 Real-Time FFT Analyzer 📊
+
+![STM32](https://img.shields.io/badge/STM32-F103RB-blue.svg) ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+
 A high-performance, real-time Fast Fourier Transform (FFT) implementation on the STM32F103 microcontroller. This project demonstrates how to capture analog signals using ADC with DMA and process them using the CMSIS-DSP library to analyze frequency components efficiently.
 
 ## 🚀 Features
 
 *   **Real-Time Processing**: Utilizes **Double Buffering (Ping-Pong)** with DMA to ensure zero data loss during continuous sampling.
 *   **DMA vs Polling Comparison**: Includes a compile-time switch to toggle between DMA and Polling modes, demonstrating the impact of "Blind Time" on signal analysis.
-*   **High Precision**: Implements 1024-point Floating-Point RFFT (Real FFT) using ARM CMSIS-DSP.
-*   **Live Monitoring**: Outputs Peak Frequency and Magnitude via UART for real-time analysis on a PC.
+*   **High Precision**: Implements 512-point Floating-Point RFFT (Real FFT) using ARM CMSIS-DSP.
+*   **Dual Channel Monitoring**: Simultaneously captures **Signal (CH0)** and **Temperature (CH1)** using ADC Scan Mode.
+*   **Live Monitoring**: Outputs Peak Frequency, Magnitude, and Temperature via UART for real-time analysis on a PC.
 *   **Performance Verified**: Optimized to run within the sampling period (Processing time < 110ms @ 4.6kHz Sampling).
 *   **Safety First**: Includes critical section handling to prevent race conditions between DMA interrupts and main loop processing.
 
@@ -24,7 +29,8 @@ A high-performance, real-time Fast Fourier Transform (FFT) implementation on the
 | Pin | Function | Description |
 | :--- | :--- | :--- |
 | **PA0** | ADC_IN0 | Analog Signal Input (0V ~ 3.3V) |
-| **PA2** | USART2_TX | UART Debug Output (115200 bps) |
+| **PA1** | ADC_IN1 | Temperature Sensor Input (e.g., LM35) |
+| **PA2** | USART2_TX | UART Debug Output (115200 bps / 460800 bps) |
 | **PA3** | USART2_RX | UART Debug Input |
 | **PA5** | LD2 (LED) | Timing Measurement / Status LED |
 
@@ -64,8 +70,8 @@ A high-performance, real-time Fast Fourier Transform (FFT) implementation on the
     *   Data: 8 bit, Parity: None, Stop: 1 bit
 3.  **Run**: Reset the board. You should see the peak frequency output:
     ```text
-    Peak: 1000.0 Hz, Mag: 45000.0
-    Peak: 1000.0 Hz, Mag: 44950.5
+    Peak: 1000.0 Hz, Mag: 45000, Temp: 25.5 C
+    Peak: 1000.0 Hz, Mag: 44950, Temp: 25.6 C
     ...
     ```
 4.  **Verify Timing**: Probe **PA5** with an oscilloscope. The High pulse width represents the FFT calculation time.
@@ -107,7 +113,10 @@ To achieve real-time performance, we use a buffer size of `2 * FFT_LEN`.
 *   **Full-Complete Interrupt**: Triggered when the second half is full. CPU processes the second half while DMA fills the first half (Circular Mode).
 
 ### Signal Processing Chain
-1.  **ADC Capture**: 12-bit samples @ ~4.6kHz.
+1.  **ADC Capture**: 12-bit samples @ ~4.1kHz (4096Hz).
+    *   **Scan Mode**: Captures CH0 (Signal) and CH1 (Temperature) sequentially.
+    *   **FFT Length**: 512 samples (Reduced from 1024 to accommodate dual-channel buffering in RAM).
+    *   **Resolution**: ~8 Hz per bin.
 2.  **Int-to-Float**: Convert `uint16_t` to `float32_t`.
 3.  **RFFT**: Compute Real FFT using `arm_rfft_fast_f32`.
 4.  **Magnitude**: Calculate `sqrt(Re^2 + Im^2)`.
