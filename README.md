@@ -2,10 +2,6 @@
 
 ![STM32](https://img.shields.io/badge/STM32-F103RB-blue.svg) ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-# STM32 Real-Time FFT Analyzer 📊
-
-![STM32](https://img.shields.io/badge/STM32-F103RB-blue.svg) ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
-
 A high-performance, real-time Fast Fourier Transform (FFT) implementation on the STM32F103 microcontroller. This project demonstrates how to capture analog signals using ADC with DMA and process them using the CMSIS-DSP library to analyze frequency components efficiently.
 
 ## 🚀 Features
