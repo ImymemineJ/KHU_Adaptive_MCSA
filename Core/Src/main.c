@@ -52,8 +52,14 @@ TIM_HandleTypeDef htim3;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
+#define USE_DMA 1 // 1: DMA (Double Buffering), 0: Polling (Data Loss)
 #define FFT_LEN  1024
-uint16_t adc_buffer[FFT_LEN * 2]; // ADC DMA Destination (Double Buffered)
+
+#if USE_DMA
+uint16_t adc_buffer[FFT_LEN * 2]; // Double Buffered
+#else
+uint16_t adc_buffer[FFT_LEN];     // Single Buffer for Polling
+#endif
 float32_t fft_input_buffer[FFT_LEN];
 float32_t fft_output_buffer[FFT_LEN];
 float32_t fft_magnitude[FFT_LEN / 2];
@@ -115,7 +121,12 @@ int main(void)
   /* USER CODE BEGIN 2 */
   arm_rfft_fast_init_f32(&S, FFT_LEN);
   HAL_TIM_Base_Start(&htim3);
+  
+#if USE_DMA
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, FFT_LEN * 2);
+#else
+  HAL_ADC_Start(&hadc1); // Start ADC in Interrupt/Polling mode (Triggered by Timer)
+#endif
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -125,6 +136,10 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+#if USE_DMA
+    // =========================================================================
+    // DMA Mode (Double Buffering) - No Data Loss
+    // =========================================================================
     if (fft_data_ready) {
       // Critical Section: Safely read and clear the flag to prevent race conditions
       __disable_irq();
@@ -136,6 +151,26 @@ int main(void)
       if (state == 0) continue;
 
       uint16_t* src_buffer = (state == 1) ? &adc_buffer[0] : &adc_buffer[FFT_LEN];
+#else
+    // =========================================================================
+    // Polling Mode - Data Loss Occurs during Processing
+    // =========================================================================
+    // 1. Collect Data (Blocking)
+    // In this loop, CPU is busy waiting for ADC.
+    for (int i = 0; i < FFT_LEN; i++) {
+        // Wait for conversion (Triggered by TIM3)
+        HAL_ADC_PollForConversion(&hadc1, 100); // Wait up to 100ms (Timer period is much shorter)
+        adc_buffer[i] = (uint16_t)HAL_ADC_GetValue(&hadc1);
+    }
+    
+    // Set src_buffer to the single buffer
+    uint16_t* src_buffer = adc_buffer;
+    
+    // Fake the block to reuse processing code below
+    {
+#endif
+
+      // 1. Start Timing Measurement (Toggle LD2 High)
 
       // 1. Start Timing Measurement (Toggle LD2 High)
       HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
@@ -178,6 +213,10 @@ int main(void)
       // 6. End Timing Measurement (Toggle LD2 Low)
       HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
     }
+#if !USE_DMA
+    // End of fake block for Polling mode
+    }
+#endif
   }
   /* USER CODE END 3 */
 }
@@ -438,6 +477,7 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+#if USE_DMA
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc) {
     if (hadc->Instance == ADC1) {
         fft_data_ready = 1; // First half ready (0 to FFT_LEN-1)
@@ -449,6 +489,7 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
         fft_data_ready = 2; // Second half ready (FFT_LEN to 2*FFT_LEN-1)
     }
 }
+#endif
 /* USER CODE END 4 */
 
 /**

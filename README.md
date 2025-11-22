@@ -1,12 +1,13 @@
 # STM32 Real-Time FFT Analyzer 📊
 
-![STM32](https://img.shields.io/badge/STM32-F103RB-blue.svg) ![CMSIS-DSP](https://img.shields.io/badge/CMSIS-DSP-Lib-green.svg) ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+![STM32](https://img.shields.io/badge/STM32-F103RB-blue.svg) ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
 A high-performance, real-time Fast Fourier Transform (FFT) implementation on the STM32F103 microcontroller. This project demonstrates how to capture analog signals using ADC with DMA and process them using the CMSIS-DSP library to analyze frequency components efficiently.
 
 ## 🚀 Features
 
 *   **Real-Time Processing**: Utilizes **Double Buffering (Ping-Pong)** with DMA to ensure zero data loss during continuous sampling.
+*   **DMA vs Polling Comparison**: Includes a compile-time switch to toggle between DMA and Polling modes, demonstrating the impact of "Blind Time" on signal analysis.
 *   **High Precision**: Implements 1024-point Floating-Point RFFT (Real FFT) using ARM CMSIS-DSP.
 *   **Live Monitoring**: Outputs Peak Frequency and Magnitude via UART for real-time analysis on a PC.
 *   **Performance Verified**: Optimized to run within the sampling period (Processing time < 110ms @ 4.6kHz Sampling).
@@ -61,19 +62,6 @@ A high-performance, real-time Fast Fourier Transform (FFT) implementation on the
 2.  **Open Terminal**: Connect the board to PC and open a serial terminal (Tera Term, PuTTY).
     *   Baud Rate: **115200**
     *   Data: 8 bit, Parity: None, Stop: 1 bit
-3.  **Run**: Reset the board. You should see the peak frequency output:
-    ```text
-    Peak: 1000.0 Hz, Mag: 45000.0
-    Peak: 1000.0 Hz, Mag: 44950.5
-    ...
-    ```
-4.  **Verify Timing**: Probe **PA5** with an oscilloscope. The High pulse width represents the FFT calculation time.
-
-## 🧠 Technical Details
-
-### Double Buffering (Ping-Pong)
-To achieve real-time performance, we use a buffer size of `2 * FFT_LEN`.
-*   **Half-Complete Interrupt**: Triggered when the first half is full. CPU processes the first half while DMA fills the second half.
 *   **Full-Complete Interrupt**: Triggered when the second half is full. CPU processes the second half while DMA fills the first half (Circular Mode).
 
 ### Signal Processing Chain
