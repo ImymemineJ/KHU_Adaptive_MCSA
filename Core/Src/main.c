@@ -21,7 +21,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-//#include "arm_math.h"
+#define ARM_MATH_CM3
+#include "arm_math.h"
+#include <stdio.h> // For sprintf
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -51,7 +53,7 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 #define FFT_LEN  1024
-uint16_t adc_buffer[FFT_LEN]; // ADC DMA Destination (Changed to uint16_t for Half Word)
+uint16_t adc_buffer[FFT_LEN * 2]; // ADC DMA Destination (Double Buffered)
 float32_t fft_input_buffer[FFT_LEN];
 float32_t fft_output_buffer[FFT_LEN];
 float32_t fft_magnitude[FFT_LEN / 2];
@@ -113,7 +115,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   arm_rfft_fast_init_f32(&S, FFT_LEN);
   HAL_TIM_Base_Start(&htim3);
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, FFT_LEN);
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, FFT_LEN * 2);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -124,26 +126,57 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     if (fft_data_ready) {
-      // 1. Convert ADC data (uint16_t) to float
+      // Critical Section: Safely read and clear the flag to prevent race conditions
+      __disable_irq();
+      uint8_t state = fft_data_ready;
+      fft_data_ready = 0;
+      __enable_irq();
+
+      // If state was 0 (unlikely but possible if interrupt happened before check), skip
+      if (state == 0) continue;
+
+      uint16_t* src_buffer = (state == 1) ? &adc_buffer[0] : &adc_buffer[FFT_LEN];
+
+      // 1. Start Timing Measurement (Toggle LD2 High)
+      HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+
+      // 2. Convert ADC data (uint16_t) to float
       for (int i = 0; i < FFT_LEN; i++) {
-        fft_input_buffer[i] = (float32_t)adc_buffer[i];
+        fft_input_buffer[i] = (float32_t)src_buffer[i];
       }
 
-      // 2. Perform RFFT
+      // Flag is already cleared in critical section
+
+      // 3. Perform RFFT
       arm_rfft_fast_f32(&S, fft_input_buffer, fft_output_buffer, 0);
 
-      // 3. Calculate Magnitude
-      // RFFT output is packed: [R0, I0, R1, I1, ..., R(N/2)-1, I(N/2)-1]
-      // But arm_rfft_fast_f32 output format is a bit complex, 
-      // usually we use arm_cmplx_mag_f32 on the output.
-      // Note: The first element is R0, second is R(N/2). 
-      // However, for simple magnitude calculation of the spectrum:
+      // 4. Calculate Magnitude
       arm_cmplx_mag_f32(fft_output_buffer, fft_magnitude, FFT_LEN / 2);
-
-      // 4. Clear Flag
-      fft_data_ready = 0;
       
-      // Optional: Add code here to analyze fft_magnitude for Fault Diagnosis
+      // 5. Find Peak Frequency (UART Debug)
+      float32_t max_value;
+      uint32_t max_index;
+      // Skip DC component (Index 0) by starting from &fft_magnitude[1] and reducing length by 1
+      arm_max_f32(&fft_magnitude[1], (FFT_LEN / 2) - 1, &max_value, &max_index);
+      
+      // Adjust index because we started from 1
+      max_index += 1;
+      
+      // Calculate Frequency: Freq = Index * Fs / FFT_LEN
+      // Fs = 4096 Hz (Calculated from TIM3 settings: 64MHz / 125 / 125)
+      float32_t freq = (float32_t)max_index * 4096.0f / (float32_t)FFT_LEN;
+
+      // Ignore DC component (Index 0) if needed, but keeping it for now.
+      
+      char uart_buf[64];
+      // 부동 소수점 포맷팅(%f) 지원이 꺼져있을 때를 대비한 우회 출력 방식
+      int len = sprintf(uart_buf, "Peak: %d.%d Hz, Mag: %d.%d\r\n", 
+                        (int)freq, (int)((freq - (int)freq) * 10), 
+                        (int)max_value, (int)((max_value - (int)max_value) * 10));
+      HAL_UART_Transmit(&huart2, (uint8_t*)uart_buf, len, 10);
+
+      // 6. End Timing Measurement (Toggle LD2 Low)
+      HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
     }
   }
   /* USER CODE END 3 */
@@ -405,9 +438,15 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc) {
+    if (hadc->Instance == ADC1) {
+        fft_data_ready = 1; // First half ready (0 to FFT_LEN-1)
+    }
+}
+
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
     if (hadc->Instance == ADC1) {
-        fft_data_ready = 1;
+        fft_data_ready = 2; // Second half ready (FFT_LEN to 2*FFT_LEN-1)
     }
 }
 /* USER CODE END 4 */
