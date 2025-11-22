@@ -53,11 +53,11 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 #define USE_DMA 1 // 1: DMA (Double Buffering), 0: Polling (Data Loss)
-#define VISUALIZER_MODE 1 // 1: Binary Output for Python Visualizer (460800bps), 0: Text Output (115200bps)
-#define FFT_LEN  1024
+#define USE_DMA 1 // 1: DMA (Double Buffering), 0: Polling (Data Loss)
+#define FFT_LEN  512 // Reduced from 1024 to prevent RAM overflow (2 channels * 2 buffers)
 
 #if USE_DMA
-uint16_t adc_buffer[FFT_LEN * 2]; // Double Buffered
+uint16_t adc_buffer[FFT_LEN * 4]; // Double Buffered, 2 Channels (CH0: Signal, CH1: Temp)
 #else
 uint16_t adc_buffer[FFT_LEN];     // Single Buffer for Polling
 #endif
@@ -124,10 +124,14 @@ int main(void)
   HAL_TIM_Base_Start(&htim3);
   
 #if USE_DMA
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, FFT_LEN * 2);
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, FFT_LEN * 4);
 #else
   HAL_ADC_Start(&hadc1); // Start ADC in Interrupt/Polling mode (Triggered by Timer)
 #endif
+  
+  // Debug: Confirm UART is working at startup
+  HAL_UART_Transmit(&huart2, (uint8_t*)"UART Initialized v4 (ADC Fixed)\r\n", 33, 100);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -151,7 +155,9 @@ int main(void)
       // If state was 0 (unlikely but possible if interrupt happened before check), skip
       if (state == 0) continue;
 
-      uint16_t* src_buffer = (state == 1) ? &adc_buffer[0] : &adc_buffer[FFT_LEN];
+      // state 1: First half (0 to 2*FFT_LEN - 1)
+      // state 2: Second half (2*FFT_LEN to 4*FFT_LEN - 1)
+      uint16_t* src_buffer = (state == 1) ? &adc_buffer[0] : &adc_buffer[FFT_LEN * 2];
 #else
     // =========================================================================
     // Polling Mode - Data Loss Occurs during Processing
@@ -176,10 +182,23 @@ int main(void)
       // 1. Start Timing Measurement (Toggle LD2 High)
       HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
 
-      // 2. Convert ADC data (uint16_t) to float
+      // 2. Convert ADC data (uint16_t) to float and Extract Temperature
+      // DMA stores data as: [CH0, CH1, CH0, CH1, ...]
+      // CH0 = Signal, CH1 = Temperature
+      uint32_t temp_sum = 0;
+      
       for (int i = 0; i < FFT_LEN; i++) {
-        fft_input_buffer[i] = (float32_t)src_buffer[i];
+        // Even indices (0, 2, 4...) -> Signal (CH0)
+        fft_input_buffer[i] = (float32_t)src_buffer[2 * i];
+        
+        // Odd indices (1, 3, 5...) -> Temperature (CH1)
+        temp_sum += src_buffer[2 * i + 1];
       }
+      
+      // Calculate Average Temperature
+      float32_t temp_adc_avg = (float32_t)temp_sum / (float32_t)FFT_LEN;
+      float32_t temp_volts = temp_adc_avg * 3.3f / 4095.0f;
+      float32_t temperature = temp_volts * 100.0f; // Assuming LM35 (10mV/C)
 
       // Flag is already cleared in critical section
 
@@ -189,21 +208,6 @@ int main(void)
       // 4. Calculate Magnitude
       arm_cmplx_mag_f32(fft_output_buffer, fft_magnitude, FFT_LEN / 2);
       
-#if VISUALIZER_MODE
-      // =========================================================================
-      // Visualizer Mode: Send Binary Data (Header + Float Array)
-      // =========================================================================
-      // 1. Send Header (0xFFFFFFFF) to sync
-      uint32_t header = 0xFFFFFFFF;
-      HAL_UART_Transmit(&huart2, (uint8_t*)&header, 4, 10);
-
-      // 2. Send FFT Magnitude Data (512 floats = 2048 bytes)
-      // Note: We send only the first half (DC to Nyquist)
-      HAL_UART_Transmit(&huart2, (uint8_t*)fft_magnitude, (FFT_LEN / 2) * sizeof(float32_t), 100);
-#else
-      // =========================================================================
-      // Text Mode: Send Peak Frequency Info
-      // =========================================================================
       // 5. Find Peak Frequency (UART Debug)
       float32_t max_value;
       uint32_t max_index;
@@ -219,18 +223,21 @@ int main(void)
 
       // Ignore DC component (Index 0) if needed, but keeping it for now.
       
-      char uart_buf[64];
+      char uart_buf[100];
       // 부동 소수점 포맷팅(%f) 지원이 꺼져있을 때를 대비한 우회 출력 방식
-      int len = sprintf(uart_buf, "Peak: %d.%d Hz, Mag: %d.%d\r\n", 
+      int len = sprintf(uart_buf, "Peak: %d.%d Hz, Mag: %d, Temp: %d.%d C\r\n", 
                         (int)freq, (int)((freq - (int)freq) * 10), 
-                        (int)max_value, (int)((max_value - (int)max_value) * 10));
-      HAL_UART_Transmit(&huart2, (uint8_t*)uart_buf, len, 10);
-#endif
+                        (int)max_value, 
+                        (int)temperature, (int)((temperature - (int)temperature) * 10));
+      HAL_UART_Transmit(&huart2, (uint8_t*)uart_buf, len, 100);
 
       // 6. End Timing Measurement (Toggle LD2 Low)
       HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
     }
-
+#if !USE_DMA
+    // End of fake block for Polling mode
+    }
+#endif
   }
   /* USER CODE END 3 */
 }
@@ -301,12 +308,13 @@ static void MX_ADC1_Init(void)
   /** Common config
   */
   hadc1.Instance = ADC1;
-  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
   hadc1.Init.ContinuousConvMode = DISABLE;
-  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.DiscontinuousConvMode = ENABLE;
+  hadc1.Init.NbrOfDiscConversion = 2;
   hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T3_TRGO;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.NbrOfConversion = 2;
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
     Error_Handler();
@@ -317,6 +325,15 @@ static void MX_ADC1_Init(void)
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = ADC_REGULAR_RANK_2;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -414,11 +431,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-#if VISUALIZER_MODE
-  huart2.Init.BaudRate = 460800;
-#else
   huart2.Init.BaudRate = 115200;
-#endif
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
