@@ -62,6 +62,37 @@ A high-performance, real-time Fast Fourier Transform (FFT) implementation on the
 2.  **Open Terminal**: Connect the board to PC and open a serial terminal (Tera Term, PuTTY).
     *   Baud Rate: **115200**
     *   Data: 8 bit, Parity: None, Stop: 1 bit
+3.  **Run**: Reset the board. You should see the peak frequency output:
+    ```text
+    Peak: 1000.0 Hz, Mag: 45000.0
+    Peak: 1000.0 Hz, Mag: 44950.5
+    ...
+    ```
+4.  **Verify Timing**: Probe **PA5** with an oscilloscope. The High pulse width represents the FFT calculation time.
+
+## 🔬 Experiment: DMA vs Polling
+
+You can switch between DMA and Polling modes to observe the importance of DMA in real-time systems.
+
+1.  Open `Core/Src/main.c`.
+2.  Modify the `USE_DMA` macro:
+    ```c
+    #define USE_DMA 1 // 1: DMA Mode (No Data Loss), 0: Polling Mode (Data Loss)
+    ```
+3.  **DMA Mode (`1`)**:
+    *   ADC writes to buffer via DMA in the background.
+    *   CPU processes the other half of the buffer simultaneously.
+    *   **Result**: Continuous monitoring, no blind spots.
+4.  **Polling Mode (`0`)**:
+    *   CPU is busy waiting for ADC conversion.
+    *   ADC stops capturing while CPU is processing FFT (Blind Time ~42ms).
+    *   **Result**: Signal updates are slower (~264ms period) and data during processing is lost.
+
+## 🧠 Technical Details
+
+### Double Buffering (Ping-Pong)
+To achieve real-time performance, we use a buffer size of `2 * FFT_LEN`.
+*   **Half-Complete Interrupt**: Triggered when the first half is full. CPU processes the first half while DMA fills the second half.
 *   **Full-Complete Interrupt**: Triggered when the second half is full. CPU processes the second half while DMA fills the first half (Circular Mode).
 
 ### Signal Processing Chain
@@ -70,9 +101,3 @@ A high-performance, real-time Fast Fourier Transform (FFT) implementation on the
 3.  **RFFT**: Compute Real FFT using `arm_rfft_fast_f32`.
 4.  **Magnitude**: Calculate `sqrt(Re^2 + Im^2)`.
 5.  **Peak Search**: Find the bin with maximum magnitude (ignoring DC).
-
-## 🤝 Contributing
-Contributions are welcome! Please fork the repository and submit a Pull Request.
-
-## 📄 License
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
