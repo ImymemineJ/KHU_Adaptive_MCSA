@@ -53,6 +53,7 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 #define USE_DMA 1 // 1: DMA (Double Buffering), 0: Polling (Data Loss)
+#define VISUALIZER_MODE 1 // 1: Binary Output for Python Visualizer (460800bps), 0: Text Output (115200bps)
 #define FFT_LEN  1024
 
 #if USE_DMA
@@ -188,6 +189,21 @@ int main(void)
       // 4. Calculate Magnitude
       arm_cmplx_mag_f32(fft_output_buffer, fft_magnitude, FFT_LEN / 2);
       
+#if VISUALIZER_MODE
+      // =========================================================================
+      // Visualizer Mode: Send Binary Data (Header + Float Array)
+      // =========================================================================
+      // 1. Send Header (0xFFFFFFFF) to sync
+      uint32_t header = 0xFFFFFFFF;
+      HAL_UART_Transmit(&huart2, (uint8_t*)&header, 4, 10);
+
+      // 2. Send FFT Magnitude Data (512 floats = 2048 bytes)
+      // Note: We send only the first half (DC to Nyquist)
+      HAL_UART_Transmit(&huart2, (uint8_t*)fft_magnitude, (FFT_LEN / 2) * sizeof(float32_t), 100);
+#else
+      // =========================================================================
+      // Text Mode: Send Peak Frequency Info
+      // =========================================================================
       // 5. Find Peak Frequency (UART Debug)
       float32_t max_value;
       uint32_t max_index;
@@ -209,14 +225,12 @@ int main(void)
                         (int)freq, (int)((freq - (int)freq) * 10), 
                         (int)max_value, (int)((max_value - (int)max_value) * 10));
       HAL_UART_Transmit(&huart2, (uint8_t*)uart_buf, len, 10);
+#endif
 
       // 6. End Timing Measurement (Toggle LD2 Low)
       HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
     }
-#if !USE_DMA
-    // End of fake block for Polling mode
-    }
-#endif
+
   }
   /* USER CODE END 3 */
 }
@@ -400,7 +414,11 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
+#if VISUALIZER_MODE
+  huart2.Init.BaudRate = 460800;
+#else
   huart2.Init.BaudRate = 115200;
+#endif
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
