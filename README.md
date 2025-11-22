@@ -88,6 +88,17 @@ You can switch between DMA and Polling modes to observe the importance of DMA in
     *   ADC stops capturing while CPU is processing FFT (Blind Time ~42ms).
     *   **Result**: Signal updates are slower (~264ms period) and data during processing is lost.
 
+### 4. Experimental Results (Observed)
+| Feature | DMA On (`USE_DMA 1`) | DMA Off (`USE_DMA 0`) |
+| :--- | :--- | :--- |
+| **FPS (Update Rate)** | **Stable ~4.0 FPS** (Max 5.7) | **Unstable 1.9 ~ 4.0 FPS** |
+| **Signal Continuity** | Smooth, continuous movement | Jerky, "teleporting" peaks |
+| **Blind Time** | **Zero** (0ms) | **~50ms** per frame |
+
+> **Analysis**:
+> Even though the maximum FPS is limited by the physical sampling time (~220ms), **DMA Mode** maintains a stable frame rate because data acquisition never stops.
+> **Polling Mode** suffers from significant frame drops (down to 1.9 FPS) because the CPU stops capturing data while processing the FFT, leading to "Blind Time" where signal changes are completely missed.
+
 ## 🧠 Technical Details
 
 ### Double Buffering (Ping-Pong)
