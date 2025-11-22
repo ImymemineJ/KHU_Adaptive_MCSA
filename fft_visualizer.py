@@ -11,7 +11,7 @@ import time
 # ==============================================================================
 SERIAL_PORT = 'COM5'  # Change this to your STM32 COM port
 BAUD_RATE = 460800    # Must match STM32 setting
-FFT_LEN = 1024
+FFT_LEN = 512
 DATA_LEN = FFT_LEN // 2
 FS = 4096.0           # Sampling Frequency
 
@@ -28,6 +28,7 @@ class SerialReader:
         self.frame_count = 0
         self.start_time = time.time()
         self.fps = 0.0
+        self.temperature = 0.0
         
     def read_loop(self):
         print(f"Listening on {self.ser.port} at {self.ser.baudrate}...")
@@ -50,17 +51,23 @@ class SerialReader:
                         # Keep only last 3 bytes to append next one
                         sync_buf = sync_buf[-3:]
                 
-                # 2. Read Data Payload (512 floats = 2048 bytes)
-                raw_data = self.ser.read(DATA_LEN * 4)
+                # 2. Read Data Payload (FFT_LEN/2 floats + 1 float for Temp)
+                # FFT_LEN = 512 -> 256 floats for FFT + 1 float for Temp = 257 floats
+                # 257 * 4 = 1028 bytes
+                raw_data = self.ser.read((DATA_LEN + 1) * 4)
                 
-                if len(raw_data) == DATA_LEN * 4:
+                if len(raw_data) == (DATA_LEN + 1) * 4:
                     # Unpack binary data to float array
-                    floats = struct.unpack(f'{DATA_LEN}f', raw_data)
+                    floats = struct.unpack(f'{DATA_LEN + 1}f', raw_data)
+                    
+                    fft_data = floats[:DATA_LEN]
+                    temp_val = floats[DATA_LEN]
                     
                     # Basic sanity check: Magnitude shouldn't be infinite or NaN
-                    if np.all(np.isfinite(floats)):
+                    if np.all(np.isfinite(fft_data)):
                         with self.lock:
-                            self.data = np.array(floats)
+                            self.data = np.array(fft_data)
+                            self.temperature = temp_val
                             self.frame_count += 1
                     else:
                         print("Warning: Received NaN/Inf data, skipping frame.")
@@ -116,6 +123,7 @@ def main():
             dt = now - fps_start_time
             if dt >= 0.5:
                 current_fps = (total_frames - fps_frame_count) / dt
+                print(f"FPS: {current_fps:.1f}, Temp: {reader.temperature:.1f} C")
                 fps_frame_count = total_frames
                 fps_start_time = now
             
@@ -124,8 +132,18 @@ def main():
                 y_data[0] = 0 
             
             line.set_ydata(y_data)
-            ax.set_title(f"Real-Time FFT Spectrum (FPS: {current_fps:.1f})")
             
+            # Dynamic Y-axis adjustment (Auto-scale)
+            max_val = np.max(y_data) if len(y_data) > 0 else 0
+            if max_val > 0:
+                current_ylim = ax.get_ylim()[1]
+                if max_val > current_ylim:
+                    ax.set_ylim(0, max_val * 1.2)
+                elif max_val < current_ylim * 0.5 and max_val > 10:
+                    ax.set_ylim(0, max_val * 1.2)
+            
+            ax.set_title(f"Real-Time FFT Spectrum (FPS: {current_fps:.1f}, Max: {max_val:.0f})")
+                
             return line,
 
         ani = FuncAnimation(fig, update, interval=30, blit=False)

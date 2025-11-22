@@ -53,14 +53,17 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 #define USE_DMA 1 // 1: DMA (Double Buffering), 0: Polling (Data Loss)
-#define USE_DMA 1 // 1: DMA (Double Buffering), 0: Polling (Data Loss)
+#define VISUALIZER_MODE 1 // 1: Binary Output for Python Visualizer (460800bps), 0: Text Output (115200bps)
 #define FFT_LEN  512 // Reduced from 1024 to prevent RAM overflow (2 channels * 2 buffers)
 
 #if USE_DMA
-uint16_t adc_buffer[FFT_LEN * 4]; // Double Buffered, 2 Channels (CH0: Signal, CH1: Temp)
+// Double Buffered, 2 Channels (CH0: Signal, CH1: Temp)
+// Size = FFT_LEN * 2 (Ping-Pong) * 2 (Channels)
+uint16_t adc_buffer[FFT_LEN * 4]; 
 #else
-uint16_t adc_buffer[FFT_LEN];     // Single Buffer for Polling
+uint16_t adc_buffer[FFT_LEN * 2]; // Single Buffer for Polling (2 Channels)
 #endif
+
 float32_t fft_input_buffer[FFT_LEN];
 float32_t fft_output_buffer[FFT_LEN];
 float32_t fft_magnitude[FFT_LEN / 2];
@@ -91,7 +94,6 @@ static void MX_TIM3_Init(void);
   */
 int main(void)
 {
-
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
@@ -122,13 +124,15 @@ int main(void)
   /* USER CODE BEGIN 2 */
   arm_rfft_fast_init_f32(&S, FFT_LEN);
   HAL_TIM_Base_Start(&htim3);
-  
+
 #if USE_DMA
+  // Start ADC with DMA (Circular Mode)
+  // Length = FFT_LEN * 4 (2 Channels * 2 Buffers)
   HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, FFT_LEN * 4);
 #else
   HAL_ADC_Start(&hadc1); // Start ADC in Interrupt/Polling mode (Triggered by Timer)
 #endif
-  
+
   // Debug: Confirm UART is working at startup
   HAL_UART_Transmit(&huart2, (uint8_t*)"UART Initialized v4 (ADC Fixed)\r\n", 33, 100);
 
@@ -155,7 +159,7 @@ int main(void)
       // If state was 0 (unlikely but possible if interrupt happened before check), skip
       if (state == 0) continue;
 
-      // state 1: First half (0 to 2*FFT_LEN - 1)
+      // state 1: First half (0 to 2*FFT_LEN - 1) -> Contains FFT_LEN samples for 2 channels
       // state 2: Second half (2*FFT_LEN to 4*FFT_LEN - 1)
       uint16_t* src_buffer = (state == 1) ? &adc_buffer[0] : &adc_buffer[FFT_LEN * 2];
 #else
@@ -164,9 +168,10 @@ int main(void)
     // =========================================================================
     // 1. Collect Data (Blocking)
     // In this loop, CPU is busy waiting for ADC.
-    for (int i = 0; i < FFT_LEN; i++) {
+    // We need to collect FFT_LEN samples for 2 channels = FFT_LEN * 2
+    for (int i = 0; i < FFT_LEN * 2; i++) {
         // Wait for conversion (Triggered by TIM3)
-        HAL_ADC_PollForConversion(&hadc1, 100); // Wait up to 100ms (Timer period is much shorter)
+        HAL_ADC_PollForConversion(&hadc1, 100); 
         adc_buffer[i] = (uint16_t)HAL_ADC_GetValue(&hadc1);
     }
     
@@ -176,8 +181,6 @@ int main(void)
     // Fake the block to reuse processing code below
     {
 #endif
-
-      // 1. Start Timing Measurement (Toggle LD2 High)
 
       // 1. Start Timing Measurement (Toggle LD2 High)
       HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
@@ -198,9 +201,7 @@ int main(void)
       // Calculate Average Temperature
       float32_t temp_adc_avg = (float32_t)temp_sum / (float32_t)FFT_LEN;
       float32_t temp_volts = temp_adc_avg * 3.3f / 4095.0f;
-      float32_t temperature = temp_volts * 100.0f; // Assuming LM35 (10mV/C)
-
-      // Flag is already cleared in critical section
+      float32_t temperature = temp_volts * 100.0f; // Assuming LM35 (10mV/C) or similar
 
       // 3. Perform RFFT
       arm_rfft_fast_f32(&S, fft_input_buffer, fft_output_buffer, 0);
@@ -208,28 +209,43 @@ int main(void)
       // 4. Calculate Magnitude
       arm_cmplx_mag_f32(fft_output_buffer, fft_magnitude, FFT_LEN / 2);
       
+#if VISUALIZER_MODE
+      // =========================================================================
+      // Visualizer Mode: Send Binary Data (Header + Float Array)
+      // =========================================================================
+      // 1. Send Header (0xFFFFFFFF) to sync
+      uint32_t header = 0xFFFFFFFF;
+      HAL_UART_Transmit(&huart2, (uint8_t*)&header, 4, 10);
+
+      // 2. Send FFT Magnitude Data (FFT_LEN/2 floats)
+      HAL_UART_Transmit(&huart2, (uint8_t*)fft_magnitude, (FFT_LEN / 2) * sizeof(float32_t), 100);
+
+      // 3. Send Temperature Data (1 float)
+      HAL_UART_Transmit(&huart2, (uint8_t*)&temperature, sizeof(float32_t), 10);
+#else
+      // =========================================================================
+      // Text Mode: Send Peak Frequency Info + Temperature
+      // =========================================================================
       // 5. Find Peak Frequency (UART Debug)
       float32_t max_value;
       uint32_t max_index;
-      // Skip DC component (Index 0) by starting from &fft_magnitude[1] and reducing length by 1
+      // Skip DC component (Index 0)
       arm_max_f32(&fft_magnitude[1], (FFT_LEN / 2) - 1, &max_value, &max_index);
       
       // Adjust index because we started from 1
       max_index += 1;
       
       // Calculate Frequency: Freq = Index * Fs / FFT_LEN
-      // Fs = 4096 Hz (Calculated from TIM3 settings: 64MHz / 125 / 125)
+      // Fs = 4096 Hz (Calculated from TIM3 settings)
       float32_t freq = (float32_t)max_index * 4096.0f / (float32_t)FFT_LEN;
-
-      // Ignore DC component (Index 0) if needed, but keeping it for now.
       
       char uart_buf[100];
-      // 부동 소수점 포맷팅(%f) 지원이 꺼져있을 때를 대비한 우회 출력 방식
       int len = sprintf(uart_buf, "Peak: %d.%d Hz, Mag: %d, Temp: %d.%d C\r\n", 
                         (int)freq, (int)((freq - (int)freq) * 10), 
                         (int)max_value, 
                         (int)temperature, (int)((temperature - (int)temperature) * 10));
       HAL_UART_Transmit(&huart2, (uint8_t*)uart_buf, len, 100);
+#endif
 
       // 6. End Timing Measurement (Toggle LD2 Low)
       HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
@@ -308,13 +324,12 @@ static void MX_ADC1_Init(void)
   /** Common config
   */
   hadc1.Instance = ADC1;
-  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
+  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE; // Enable Scan for multiple channels
   hadc1.Init.ContinuousConvMode = DISABLE;
-  hadc1.Init.DiscontinuousConvMode = ENABLE;
-  hadc1.Init.NbrOfDiscConversion = 2;
+  hadc1.Init.DiscontinuousConvMode = DISABLE; // Disable Discontinuous to convert all channels on one trigger
   hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T3_TRGO;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 2;
+  hadc1.Init.NbrOfConversion = 2; // 2 Channels
   if (HAL_ADC_Init(&hadc1) != HAL_OK)
   {
     Error_Handler();
@@ -431,7 +446,11 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
+#if VISUALIZER_MODE
+  huart2.Init.BaudRate = 460800;
+#else
   huart2.Init.BaudRate = 115200;
+#endif
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -511,13 +530,13 @@ static void MX_GPIO_Init(void)
 #if USE_DMA
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc) {
     if (hadc->Instance == ADC1) {
-        fft_data_ready = 1; // First half ready (0 to FFT_LEN-1)
+        fft_data_ready = 1; // First half ready
     }
 }
 
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
     if (hadc->Instance == ADC1) {
-        fft_data_ready = 2; // Second half ready (FFT_LEN to 2*FFT_LEN-1)
+        fft_data_ready = 2; // Second half ready
     }
 }
 #endif
@@ -537,7 +556,8 @@ void Error_Handler(void)
   }
   /* USER CODE END Error_Handler_Debug */
 }
-#ifdef USE_FULL_ASSERT
+
+#ifdef  USE_FULL_ASSERT
 /**
   * @brief  Reports the name of the source file and the source line number
   *         where the assert_param error has occurred.
