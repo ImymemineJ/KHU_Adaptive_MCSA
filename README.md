@@ -40,7 +40,7 @@ A high-performance, real-time Fast Fourier Transform (FFT) implementation on the
 
 1.  **Clone the Repository**
     ```bash
-    git clone https://github.com/yourusername/STM32_A-FFT.git
+    git clone https://github.com/Adaptive-MCSA-Redundancy-System/STM32_A-FFT.git
     ```
 
 2.  **Import to STM32CubeIDE**
