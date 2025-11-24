@@ -14,6 +14,19 @@ A high-performance, real-time Fast Fourier Transform (FFT) implementation on the
 *   **Performance Verified**: Optimized to run within the sampling period (Processing time < 110ms @ 4.6kHz Sampling).
 *   **Safety First**: Includes critical section handling to prevent race conditions between DMA interrupts and main loop processing.
 *   **A-to-B Communication**: Extracts 5 key features (Peak, Sideband, Harmonic, RMS, THD) and transmits them to another STM32 board via **SPI**.
+*   **Python Visualizer**: Custom Python script for real-time spectrum analysis and feature monitoring (F1~F5).
+
+## 📊 Result Visualization
+
+![Real-Time FFT Spectrum](Images/fft_visualization_demo.png)
+
+*   **Real-Time Spectrum**: 860Hz Sine Wave Input.
+*   **Feature Extraction**:
+    *   **F1 (Peak)**: Fundamental Frequency Magnitude.
+    *   **F2 (Sideband)**: Max Sideband Magnitude.
+    *   **F3 (Harmonic)**: 3rd Harmonic Magnitude (0 if > Nyquist).
+    *   **F4 (RMS)**: Time-Domain RMS.
+    *   **F5 (THD)**: Total Harmonic Distortion.
 
 ## 🛠 Hardware Requirements
 

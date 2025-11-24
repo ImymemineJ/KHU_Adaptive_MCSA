@@ -238,6 +238,9 @@ int main(void)
 
       // 3. Send Temperature Data (1 float)
       HAL_UART_Transmit(&huart2, (uint8_t*)&temperature, sizeof(float32_t), 10);
+
+      // 4. Send Feature Packet (5 floats)
+      HAL_UART_Transmit(&huart2, (uint8_t*)&g_feat, sizeof(FeaturePacket), 10);
 #else
       // =========================================================================
       // Text Mode: Send Peak Frequency Info + Temperature + Features

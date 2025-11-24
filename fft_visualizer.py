@@ -51,23 +51,25 @@ class SerialReader:
                         # Keep only last 3 bytes to append next one
                         sync_buf = sync_buf[-3:]
                 
-                # 2. Read Data Payload (FFT_LEN/2 floats + 1 float for Temp)
-                # FFT_LEN = 512 -> 256 floats for FFT + 1 float for Temp = 257 floats
-                # 257 * 4 = 1028 bytes
-                raw_data = self.ser.read((DATA_LEN + 1) * 4)
+                # 2. Read Data Payload (FFT_LEN/2 floats + 1 float for Temp + 5 floats for Features)
+                # FFT_LEN = 512 -> 256 floats for FFT + 1 float for Temp + 5 floats for Features = 262 floats
+                # 262 * 4 = 1048 bytes
+                raw_data = self.ser.read((DATA_LEN + 1 + 5) * 4)
                 
-                if len(raw_data) == (DATA_LEN + 1) * 4:
+                if len(raw_data) == (DATA_LEN + 1 + 5) * 4:
                     # Unpack binary data to float array
-                    floats = struct.unpack(f'{DATA_LEN + 1}f', raw_data)
+                    floats = struct.unpack(f'{DATA_LEN + 1 + 5}f', raw_data)
                     
                     fft_data = floats[:DATA_LEN]
                     temp_val = floats[DATA_LEN]
+                    features = floats[DATA_LEN+1:] # F1~F5
                     
                     # Basic sanity check: Magnitude shouldn't be infinite or NaN
                     if np.all(np.isfinite(fft_data)):
                         with self.lock:
                             self.data = np.array(fft_data)
                             self.temperature = temp_val
+                            self.features = features
                             self.frame_count += 1
                     else:
                         print("Warning: Received NaN/Inf data, skipping frame.")
@@ -96,6 +98,8 @@ def main():
         
         # Setup Plot
         fig, ax = plt.subplots()
+        plt.subplots_adjust(right=0.75) # Make room for text box
+        
         x_axis = np.linspace(0, FS/2, DATA_LEN)
         line, = ax.plot(x_axis, np.zeros(DATA_LEN))
         
@@ -105,6 +109,10 @@ def main():
         ax.set_xlabel("Frequency (Hz)")
         ax.set_ylabel("Magnitude")
         ax.grid(True)
+        
+        # Text Box for Features
+        text_box = fig.text(0.78, 0.5, '', fontsize=10, verticalalignment='center',
+                            bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
         
         # FPS Calculation Variables
         fps_start_time = time.time()
@@ -117,13 +125,15 @@ def main():
             with reader.lock:
                 y_data = reader.data.copy()
                 total_frames = reader.frame_count
+                temp = reader.temperature
+                feats = getattr(reader, 'features', [0.0]*5)
             
             # Calculate FPS based on reader's frame count
             now = time.time()
             dt = now - fps_start_time
             if dt >= 0.5:
                 current_fps = (total_frames - fps_frame_count) / dt
-                print(f"FPS: {current_fps:.1f}, Temp: {reader.temperature:.1f} C")
+                print(f"FPS: {current_fps:.1f}, Temp: {temp:.1f} C")
                 fps_frame_count = total_frames
                 fps_start_time = now
             
@@ -142,9 +152,19 @@ def main():
                 elif max_val < current_ylim * 0.5 and max_val > 10:
                     ax.set_ylim(0, max_val * 1.2)
             
-            ax.set_title(f"Real-Time FFT Spectrum (FPS: {current_fps:.1f}, Max: {max_val:.0f})")
+            ax.set_title(f"Real-Time FFT Spectrum (FPS: {current_fps:.1f})")
+            
+            # Update Text Box
+            info_text = (f"Temp: {temp:.1f} C\n\n"
+                         f"Features:\n"
+                         f"F1 (Peak): {feats[0]:.0f}\n"
+                         f"F2 (Side): {feats[1]:.0f}\n"
+                         f"F3 (Harm): {feats[2]:.0f}\n"
+                         f"F4 (RMS):  {feats[3]:.0f}\n"
+                         f"F5 (THD):  {feats[4]*100:.2f}%")
+            text_box.set_text(info_text)
                 
-            return line,
+            return line, text_box
 
         ani = FuncAnimation(fig, update, interval=30, blit=False)
         plt.show()
