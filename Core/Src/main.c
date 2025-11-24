@@ -44,6 +44,7 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
+SPI_HandleTypeDef hspi2;
 
 CRC_HandleTypeDef hcrc;
 
@@ -69,6 +70,7 @@ float32_t fft_output_buffer[FFT_LEN];
 float32_t fft_magnitude[FFT_LEN / 2];
 volatile uint8_t fft_data_ready = 0;
 arm_rfft_fast_instance_f32 S;
+FeaturePacket g_feat; // Global Feature Packet
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -79,6 +81,8 @@ static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_CRC_Init(void);
 static void MX_TIM3_Init(void);
+static void MX_SPI2_Init(void);
+void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* feat);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -121,6 +125,7 @@ int main(void)
   MX_ADC1_Init();
   MX_CRC_Init();
   MX_TIM3_Init();
+  MX_SPI2_Init();
   /* USER CODE BEGIN 2 */
   arm_rfft_fast_init_f32(&S, FFT_LEN);
   HAL_TIM_Base_Start(&htim3);
@@ -209,6 +214,17 @@ int main(void)
       // 4. Calculate Magnitude
       arm_cmplx_mag_f32(fft_output_buffer, fft_magnitude, FFT_LEN / 2);
       
+      // 5. Feature Extraction (F1~F5)
+      Calculate_Features(fft_magnitude, fft_input_buffer, &g_feat);
+
+      // 6. Send Features to STM32_B via SPI2
+      // Pull NSS Low
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET); 
+      // Transmit Data
+      HAL_SPI_Transmit(&hspi2, (uint8_t*)&g_feat, sizeof(FeaturePacket), 10);
+      // Pull NSS High
+      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
+      
 #if VISUALIZER_MODE
       // =========================================================================
       // Visualizer Mode: Send Binary Data (Header + Float Array)
@@ -224,7 +240,7 @@ int main(void)
       HAL_UART_Transmit(&huart2, (uint8_t*)&temperature, sizeof(float32_t), 10);
 #else
       // =========================================================================
-      // Text Mode: Send Peak Frequency Info + Temperature
+      // Text Mode: Send Peak Frequency Info + Temperature + Features
       // =========================================================================
       // 5. Find Peak Frequency (UART Debug)
       float32_t max_value;
@@ -239,11 +255,14 @@ int main(void)
       // Fs = 4096 Hz (Calculated from TIM3 settings)
       float32_t freq = (float32_t)max_index * 4096.0f / (float32_t)FFT_LEN;
       
-      char uart_buf[100];
-      int len = sprintf(uart_buf, "Peak: %d.%d Hz, Mag: %d, Temp: %d.%d C\r\n", 
+      char uart_buf[200];
+      int len = sprintf(uart_buf, "Peak: %d.%d Hz, Mag: %d, Temp: %d.%d C\r\n"
+                                  "F1: %d, F2: %d, F3: %d, F4: %d, F5: %d\r\n", 
                         (int)freq, (int)((freq - (int)freq) * 10), 
                         (int)max_value, 
-                        (int)temperature, (int)((temperature - (int)temperature) * 10));
+                        (int)temperature, (int)((temperature - (int)temperature) * 10),
+                        (int)g_feat.F1_peak, (int)g_feat.F2_sideband, (int)g_feat.F3_harmonic,
+                        (int)g_feat.F4_rms, (int)(g_feat.F5_thd * 100)); // THD as percentage * 100 for int display
       HAL_UART_Transmit(&huart2, (uint8_t*)uart_buf, len, 100);
 #endif
 
@@ -540,6 +559,98 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
     }
 }
 #endif
+
+void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* feat) {
+    // F1: Peak Frequency Magnitude
+    // Skip DC (index 0)
+    float32_t max_val;
+    uint32_t max_idx;
+    arm_max_f32(&fft_mag[1], (FFT_LEN / 2) - 1, &max_val, &max_idx);
+    max_idx += 1; // Adjust for offset
+    
+    feat->F1_peak = max_val;
+    
+    // F2: Sideband Magnitude (Highest peak in F1 +/- 5Hz)
+    // Fs = 4096Hz, FFT_LEN = 512 -> Bin Resolution = 8Hz
+    // +/- 5Hz is less than 1 bin resolution. So we check adjacent bins +/- 1.
+    float32_t sb_max = 0.0f;
+    int search_width = 1; 
+    
+    for (int i = -search_width; i <= search_width; i++) {
+        if (i == 0) continue; // Skip F1 itself
+        int idx = (int)max_idx + i;
+        if (idx > 0 && idx < (FFT_LEN / 2)) {
+            if (fft_mag[idx] > sb_max) {
+                sb_max = fft_mag[idx];
+            }
+        }
+    }
+    feat->F2_sideband = sb_max;
+
+    // F3: 3rd Harmonic Magnitude
+    // Harmonic Index = 3 * Fundamental Index
+    int h3_idx = max_idx * 3;
+    if (h3_idx < (FFT_LEN / 2)) {
+        feat->F3_harmonic = fft_mag[h3_idx];
+    } else {
+        feat->F3_harmonic = 0.0f;
+    }
+
+    // F4: RMS (Time Domain)
+    // sqrt( sum(x^2) / N )
+    float32_t sum_sq = 0.0f;
+    for (int i = 0; i < FFT_LEN; i++) {
+        sum_sq += time_sig[i] * time_sig[i];
+    }
+    float32_t mean_sq = sum_sq / (float32_t)FFT_LEN;
+    arm_sqrt_f32(mean_sq, &feat->F4_rms);
+
+    // F5: THD (Total Harmonic Distortion)
+    // sqrt( sum(Harmonic_Mag^2) ) / Fundamental_Mag
+    // Harmonics: 2nd to 5th
+    float32_t harm_energy = 0.0f;
+    for (int h = 2; h <= 5; h++) {
+        int h_idx = max_idx * h;
+        if (h_idx < (FFT_LEN / 2)) {
+            harm_energy += fft_mag[h_idx] * fft_mag[h_idx];
+        }
+    }
+    
+    float32_t harm_rms;
+    arm_sqrt_f32(harm_energy, &harm_rms);
+    
+    if (feat->F1_peak > 0.0001f) {
+        feat->F5_thd = harm_rms / feat->F1_peak;
+    } else {
+        feat->F5_thd = 0.0f;
+    }
+}
+
+/**
+  * @brief SPI2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI2_Init(void)
+{
+  /* SPI2 parameter configuration*/
+  hspi2.Instance = SPI2;
+  hspi2.Init.Mode = SPI_MODE_MASTER;
+  hspi2.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi2.Init.NSS = SPI_NSS_SOFT;
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16; // Adjust as needed
+  hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi2.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
 /* USER CODE END 4 */
 
 /**

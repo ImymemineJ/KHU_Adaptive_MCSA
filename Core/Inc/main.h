@@ -36,7 +36,13 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
-
+typedef struct {
+    float F1_peak;      // Fundamental Frequency Magnitude
+    float F2_sideband;  // Sideband Magnitude
+    float F3_harmonic;  // 3rd Harmonic Magnitude
+    float F4_rms;       // Time Domain RMS
+    float F5_thd;       // Total Harmonic Distortion
+} FeaturePacket;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/

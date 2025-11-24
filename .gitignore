@@ -1,0 +1,15 @@
+# STM32CubeIDE
+Debug/
+Release/
+.settings/
+.project
+.cproject
+.mxproject
+*.launch
+
+# Python
+__pycache__/
+*.pyc
+
+# Internal Documentation
+InternalDocs/

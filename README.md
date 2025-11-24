@@ -13,6 +13,7 @@ A high-performance, real-time Fast Fourier Transform (FFT) implementation on the
 *   **Live Monitoring**: Outputs Peak Frequency, Magnitude, and Temperature via UART for real-time analysis on a PC.
 *   **Performance Verified**: Optimized to run within the sampling period (Processing time < 110ms @ 4.6kHz Sampling).
 *   **Safety First**: Includes critical section handling to prevent race conditions between DMA interrupts and main loop processing.
+*   **A-to-B Communication**: Extracts 5 key features (Peak, Sideband, Harmonic, RMS, THD) and transmits them to another STM32 board via **SPI**.
 
 ## 🛠 Hardware Requirements
 
@@ -29,6 +30,10 @@ A high-performance, real-time Fast Fourier Transform (FFT) implementation on the
 | **PA2** | USART2_TX | UART Debug Output (115200 bps / 460800 bps) |
 | **PA3** | USART2_RX | UART Debug Input |
 | **PA5** | LD2 (LED) | Timing Measurement / Status LED |
+| **PB13** | SPI2_SCK | SPI Clock Output (Master) |
+| **PB14** | SPI2_MISO | SPI Data Input (Master) |
+| **PB15** | SPI2_MOSI | SPI Data Output (Master) |
+| **PB12** | SPI2_NSS | SPI Chip Select (Software Control) |
 
 > [!WARNING]
 > **Input Voltage Warning**: The ADC input range is **0V to 3.3V**. Do NOT apply negative voltage or voltage exceeding 3.3V. Ensure your signal has a proper DC offset (e.g., 1.65V).
