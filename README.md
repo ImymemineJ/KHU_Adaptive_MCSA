@@ -136,7 +136,7 @@ This project acts as the **Master** (STM32_A) sending analyzed feature data to a
     *   **F5**: THD (Total Harmonic Distortion)
 
 ### 🔧 Troubleshooting
-If you encounter issues with SPI communication (e.g., data corruption, OVR/MODF errors), please refer to the detailed **[SPI Troubleshooting Guide](InternalDocs/SPI_troubleshooting.md)**.
+If you encounter issues with SPI communication (e.g., data corruption, OVR/MODF errors), please refer to the detailed **[SPI Troubleshooting Guide](Docs/SPI_troubleshooting.md)**.
 It covers solutions for:
 *   NSS Pin Configuration
 *   Overrun & Mode Fault Errors
