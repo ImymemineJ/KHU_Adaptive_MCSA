@@ -24,6 +24,7 @@
 #define ARM_MATH_CM3
 #include "arm_math.h"
 #include <stdio.h> // For sprintf
+#include <string.h> // For memcpy
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -219,13 +220,19 @@ int main(void)
       Calculate_Features(fft_magnitude, fft_input_buffer, &g_feat);
 
       // 6. Send Features to STM32_B via SPI2
+      // Prepare SPI Packet with Header
+      uint8_t spi_packet[22];
+      spi_packet[0] = 0xAA;
+      spi_packet[1] = 0xBB;
+      memcpy(&spi_packet[2], &g_feat, sizeof(FeaturePacket));
+
       // Pull NSS Low
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET); 
       
       // Small delay for stability (approx 10-20us)
       for(volatile int k=0; k<100; k++) { __NOP(); } 
       // Transmit Data
-      HAL_SPI_Transmit(&hspi2, (uint8_t*)&g_feat, sizeof(FeaturePacket), 10);
+      HAL_SPI_Transmit(&hspi2, spi_packet, 22, 10);
       // Pull NSS High
       HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
       

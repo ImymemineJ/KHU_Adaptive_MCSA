@@ -119,6 +119,30 @@ You can switch between DMA and Polling modes to observe the importance of DMA in
 > Even though the maximum FPS is limited by the physical sampling time (~220ms), **DMA Mode** maintains a stable frame rate because data acquisition never stops.
 > **Polling Mode** suffers from significant frame drops (down to 1.9 FPS) because the CPU stops capturing data while processing the FFT, leading to "Blind Time" where signal changes are completely missed.
 
+## 📡 A-to-B Communication (SPI)
+
+This project acts as the **Master** (STM32_A) sending analyzed feature data to a **Slave** (STM32_B) via SPI.
+
+*   **Protocol**: SPI Mode 0, 8-bit, MSB First.
+*   **Baud Rate**: Low speed (Prescaler 256) for signal stability.
+*   **Packet Structure** (22 Bytes):
+    *   **Header**: `0xAA`, `0xBB` (Synchronization)
+    *   **Payload**: 5 x `float` (20 Bytes) - `[F1, F2, F3, F4, F5]`
+*   **Features**:
+    *   **F1**: Peak Frequency Magnitude
+    *   **F2**: Sideband Magnitude
+    *   **F3**: Harmonic Magnitude
+    *   **F4**: RMS (Time Domain)
+    *   **F5**: THD (Total Harmonic Distortion)
+
+### 🔧 Troubleshooting
+If you encounter issues with SPI communication (e.g., data corruption, OVR/MODF errors), please refer to the detailed **[SPI Troubleshooting Guide](InternalDocs/SPI_troubleshooting.md)**.
+It covers solutions for:
+*   NSS Pin Configuration
+*   Overrun & Mode Fault Errors
+*   Data Synchronization (Bit Shift)
+*   **Signal Integrity (Ringing) & GPIO Speed**
+
 ## 🧠 Technical Details
 
 ### Double Buffering (Ping-Pong)
