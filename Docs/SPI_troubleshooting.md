@@ -11,10 +11,11 @@ This document records the issues encountered during the implementation of SPI co
 
 ## 2. SPI Overrun Error (OVR)
 *   **Symptom**: STM32_B reported SPI Error Code 4 (OVR).
-*   **Cause**: STM32_A was transmitting data faster than STM32_B could process and clear its RX buffer.
-*   **Solution**:
-    *   Lowered STM32_A SPI BaudRatePrescaler from `2` to `256` in `MX_SPI2_Init`.
-    *   This significantly reduced the clock speed, giving the Slave ample time to process interrupts/DMA.
+*   **Initial Fix**: Lowered STM32_A SPI BaudRatePrescaler to `256`.
+*   **Final Solution**:
+    *   **Increased SPI Speed**: Surprisingly, switching back to **Prescaler 2** (High Speed) improved stability.
+    *   **Reasoning**: Too slow communication might have caused timing mismatches or timeouts in the Slave's processing logic.
+    *   **Current Setting**: `SPI_BAUDRATEPRESCALER_2` (Max Speed).
 
 ## 3. Mode Fault Error (MODF) & Timing
 *   **Symptom**: STM32_B reported SPI Error Code 32 (MODF) or data was corrupted.
@@ -47,7 +48,7 @@ This document records the issues encountered during the implementation of SPI co
 | Parameter | Value | Note |
 | :--- | :--- | :--- |
 | **SPI Mode** | Master | |
-| **Prescaler** | 256 | Slow speed for stability |
+| **Prescaler** | **2** | **Max Speed (Verified Stable)** |
 | **CPOL/CPHA** | Low / 1Edge | Mode 0 |
 | **NSS** | Software (PB12) | Manual control with delay |
 | **GPIO Speed** | **LOW** | **Crucial for signal integrity** |
