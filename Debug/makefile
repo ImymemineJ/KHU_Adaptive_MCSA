@@ -60,8 +60,8 @@ all: main-build
 main-build: fft.elf secondary-outputs
 
 # Tool invocations
-fft.elf fft.map: $(OBJS) $(USER_OBJS) C:\Users\SOOMIN\Desktop\Embedded\STM32_A-FFT\STM32F103RBTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
-	arm-none-eabi-gcc -o "fft.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m3 -T"C:\Users\SOOMIN\Desktop\Embedded\STM32_A-FFT\STM32F103RBTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="fft.map" -Wl,--gc-sections -static -L"C:\Users\SOOMIN\Desktop\Embedded\STM32_A-FFT\Drivers\CMSIS\Lib" --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
+fft.elf fft.map: $(OBJS) $(USER_OBJS) /Users/alice/Desktop/project2/STM32_A-FFT/STM32F103RBTX_FLASH.ld makefile objects.list $(OPTIONAL_TOOL_DEPS)
+	arm-none-eabi-gcc -o "fft.elf" @"objects.list" $(USER_OBJS) $(LIBS) -mcpu=cortex-m3 -T"/Users/alice/Desktop/project2/STM32_A-FFT/STM32F103RBTX_FLASH.ld" --specs=nosys.specs -Wl,-Map="fft.map" -Wl,--gc-sections -static -L"/Users/alice/Desktop/project2/STM32_A-FFT/Drivers/CMSIS/Lib" --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
 	@echo 'Finished building target: $@'
 	@echo ' '
 
