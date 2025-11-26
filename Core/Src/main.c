@@ -224,7 +224,11 @@ int main(void)
           // ★ 고해상도 / 더 정교한 분석 모드 (원하면 기능 넣기)
       }
       else if (g_cmd_from_B == 2) {
-          // ★ 부하 변화 모드 처리
+          // 예: FFT 길이를 1024로 변경
+           #undef FFT_LEN
+           #define FFT_LEN 1024
+           arm_rfft_fast_init_f32(&S, FFT_LEN);
+
       }
       else if (g_cmd_from_B == 3) {
           // ★ FAULT 모드 → FFT 수행하지 않고 스킵
