@@ -242,16 +242,16 @@ int main(void)
       // =========================================================================
       // 1. Send Header (0xFFFFFFFF) to sync
       uint32_t header = 0xFFFFFFFF;
-      HAL_UART_Transmit(&huart2, (uint8_t*)&header, 4, 10);
+      HAL_UART_Transmit(&huart2, (uint8_t*)&header, 4, 100);
 
       // 2. Send FFT Magnitude Data (FFT_LEN/2 floats)
-      HAL_UART_Transmit(&huart2, (uint8_t*)fft_magnitude, (FFT_LEN / 2) * sizeof(float32_t), 100);
+      HAL_UART_Transmit(&huart2, (uint8_t*)fft_magnitude, (FFT_LEN / 2) * sizeof(float32_t), 1000);
 
       // 3. Send Temperature Data (1 float)
-      HAL_UART_Transmit(&huart2, (uint8_t*)&temperature, sizeof(float32_t), 10);
+      HAL_UART_Transmit(&huart2, (uint8_t*)&temperature, sizeof(float32_t), 100);
 
       // 4. Send Feature Packet (5 floats)
-      HAL_UART_Transmit(&huart2, (uint8_t*)&g_feat, sizeof(FeaturePacket), 10);
+      HAL_UART_Transmit(&huart2, (uint8_t*)&g_feat, sizeof(FeaturePacket), 100);
 #else
       // =========================================================================
       // Text Mode: Send Peak Frequency Info + Temperature + Features
@@ -277,7 +277,7 @@ int main(void)
                         (int)temperature, (int)((temperature - (int)temperature) * 10),
                         (int)g_feat.F1_peak, (int)g_feat.F2_sideband, (int)g_feat.F3_harmonic,
                         (int)g_feat.F4_rms, (int)(g_feat.F5_thd * 100)); // THD as percentage * 100 for int display
-      HAL_UART_Transmit(&huart2, (uint8_t*)uart_buf, len, 100);
+      HAL_UART_Transmit(&huart2, (uint8_t*)uart_buf, len, 1000);
 #endif
 
       // 6. End Timing Measurement (Toggle LD2 Low)
