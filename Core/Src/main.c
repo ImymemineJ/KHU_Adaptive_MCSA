@@ -62,6 +62,8 @@ SPI_HandleTypeDef hspi1;
 #define USE_DMA 1 // 1: DMA (Double Buffering), 0: Polling (Data Loss)
 #define VISUALIZER_MODE 1 // 1: Binary Output for Python Visualizer (460800bps), 0: Text Output (115200bps)
 #define FFT_LEN  512 // Reduced from 1024 to prevent RAM overflow (2 channels * 2 buffers)
+volatile uint8_t g_cmd_from_B = 0;  // B가 보내준 상태값 저장 변수
+uint8_t spi_rx_buf[1];              // 1바이트 수신 버퍼
 
 #if USE_DMA
 // Double Buffered, 2 Channels (CH0: Signal, CH1: Temp)
@@ -135,6 +137,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
   arm_rfft_fast_init_f32(&S, FFT_LEN);
   HAL_TIM_Base_Start(&htim3);
+  HAL_SPI_Receive_IT(&hspi1, spi_rx_buf, 1);
 
 #if USE_DMA
   // Start ADC with DMA (Circular Mode)
@@ -213,10 +216,28 @@ int main(void)
       float32_t temp_adc_avg = (float32_t)temp_sum / (float32_t)FFT_LEN;
       float32_t temp_volts = temp_adc_avg * 3.3f / 4095.0f;
       float32_t temperature = temp_volts * 100.0f; // Assuming LM35 (10mV/C) or similar
+      // ========================================
+      // B에서 받은 상태값(g_cmd_from_B)에 따라 A 동작 변경
+      // ========================================
 
+      if (g_cmd_from_B == 1) {
+          // ★ 고해상도 / 더 정교한 분석 모드 (원하면 기능 넣기)
+      }
+      else if (g_cmd_from_B == 2) {
+          // ★ 부하 변화 모드 처리
+      }
+      else if (g_cmd_from_B == 3) {
+          // ★ FAULT 모드 → FFT 수행하지 않고 스킵
+          HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+          continue;
+      }
+      // 0 또는 기본 상태라면 NORMAL 모드로 그대로 FFT 수행
+
+      
       // 3. Perform RFFT
       arm_rfft_fast_f32(&S, fft_input_buffer, fft_output_buffer, 0);
-
+      
+      
       // 4. Calculate Magnitude
       arm_cmplx_mag_f32(fft_output_buffer, fft_magnitude, FFT_LEN / 2);
       
@@ -566,6 +587,19 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+// =========================
+// B → A SPI 수신 콜백 추가
+// =========================
+void HAL_SPI_RxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+    if (hspi->Instance == SPI1)
+    {
+        g_cmd_from_B = spi_rx_buf[0];  // 상태값 저장
+
+        // 다음 수신 준비
+        HAL_SPI_Receive_IT(&hspi1, spi_rx_buf, 1);
+    }
+}
 // 주파수를 FFT bin으로 변환
 static inline uint32_t freq_to_bin(float freq_hz) {
     float Fs = 4096.0f;
