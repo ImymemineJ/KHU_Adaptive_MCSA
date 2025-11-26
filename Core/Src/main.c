@@ -1,5 +1,5 @@
 /* USER CODE BEGIN Header */
-/**
+/** ADC 보내는 기능 추가
   ******************************************************************************
   * @file           : main.c
   * @brief          : Main program body
@@ -28,7 +28,13 @@
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef struct {
+    float F1_peak;
+    float F2_sideband;
+    float F3_harmonic;
+    float F4_rms;
+    float F5_thd;
+} FeaturePacket;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -50,6 +56,7 @@ CRC_HandleTypeDef hcrc;
 TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart2;
+SPI_HandleTypeDef hspi1;   
 
 /* USER CODE BEGIN PV */
 #define USE_DMA 1 // 1: DMA (Double Buffering), 0: Polling (Data Loss)
@@ -79,6 +86,8 @@ static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_CRC_Init(void);
 static void MX_TIM3_Init(void);
+static void MX_SPI1_Init(void);   
+
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -121,6 +130,8 @@ int main(void)
   MX_ADC1_Init();
   MX_CRC_Init();
   MX_TIM3_Init();
+  MX_SPI1_Init();   
+
   /* USER CODE BEGIN 2 */
   arm_rfft_fast_init_f32(&S, FFT_LEN);
   HAL_TIM_Base_Start(&htim3);
@@ -222,6 +233,15 @@ int main(void)
 
       // 3. Send Temperature Data (1 float)
       HAL_UART_Transmit(&huart2, (uint8_t*)&temperature, sizeof(float32_t), 10);
+      // ======================================================
+      // 추가: Feature 계산 + SPI 전송
+      // ======================================================
+      FeaturePacket pkt;
+      compute_features(&pkt);
+
+      // SPI로 20바이트 패킷 전송
+      HAL_SPI_Transmit(&hspi1, (uint8_t*)&pkt, sizeof(pkt), 10);
+
 #else
       // =========================================================================
       // Text Mode: Send Peak Frequency Info + Temperature
@@ -429,6 +449,25 @@ static void MX_TIM3_Init(void)
   /* USER CODE END TIM3_Init 2 */
 
 }
+static void MX_SPI1_Init(void)
+{
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_SOFT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 7;
+
+  if (HAL_SPI_Init(&hspi1) != HAL_OK) {
+      Error_Handler();
+  }
+}
 
 /**
   * @brief USART2 Initialization Function
@@ -527,6 +566,91 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+// 주파수를 FFT bin으로 변환
+static inline uint32_t freq_to_bin(float freq_hz) {
+    float Fs = 4096.0f;
+    float df = Fs / FFT_LEN;
+    int k = (int)((freq_hz / df) + 0.5f);
+    if (k < 0) k = 0;
+    if (k >= FFT_LEN/2) k = FFT_LEN/2 - 1;
+    return (uint32_t)k;
+}
+
+// Feature 5개 계산 함수
+void compute_features(FeaturePacket* out)
+{
+    float f1_target = 60.0f;
+
+    // F1: Fundamental Peak
+    uint32_t k1 = freq_to_bin(f1_target);
+    float F1 = 0.0f;
+    for (int dk = -1; dk <= 1; dk++) {
+        int k = (int)k1 + dk;
+        if (k > 0 && k < FFT_LEN/2) {
+            if (fft_magnitude[k] > F1) F1 = fft_magnitude[k];
+        }
+    }
+
+    // F2: Sideband Energy
+    float band_width = 40.0f;
+    uint32_t k_low  = freq_to_bin(f1_target - band_width);
+    uint32_t k_high = freq_to_bin(f1_target + band_width);
+    float side = 0.0f;
+
+    for (uint32_t k = k_low; k <= k_high; k++) {
+        if (k >= k1 - 2 && k <= k1 + 2) continue;
+        float m = fft_magnitude[k];
+        side += m * m;
+    }
+
+    // F3: 2nd Harmonic
+    float f2 = 2.0f * f1_target;
+    uint32_t k2 = freq_to_bin(f2);
+    float F3 = 0.0f;
+    for (int dk = -1; dk <= 1; dk++) {
+        int k = (int)k2 + dk;
+        if (k > 0 && k < FFT_LEN/2) {
+            if (fft_magnitude[k] > F3) F3 = fft_magnitude[k];
+        }
+    }
+
+    // F4: RMS (Time domain)
+    float sum_sq = 0.0f;
+    for (int i = 0; i < FFT_LEN; i++) {
+        float x = fft_input_buffer[i];
+        sum_sq += x * x;
+    }
+    float F4 = sqrtf(sum_sq / FFT_LEN);
+
+    // F5: THD
+    float harm_energy = 0.0f;
+    for (int n = 2; n <= 5; n++) {
+        float fn = n * f1_target;
+        uint32_t kn = freq_to_bin(fn);
+
+        float peak = 0.0f;
+        for (int dk = -1; dk <= 1; dk++) {
+            int k = (int)kn + dk;
+            if (k > 0 && k < FFT_LEN/2) {
+                if (fft_magnitude[k] > peak) peak = fft_magnitude[k];
+            }
+        }
+        harm_energy += peak * peak;
+    }
+
+    float F5 = 0.0f;
+    if (F1 > 1e-6f) {
+        F5 = sqrtf(harm_energy) / F1;
+    }
+
+    // 최종 출력 구조체에 저장
+    out->F1_peak      = F1;
+    out->F2_sideband  = side;
+    out->F3_harmonic  = F3;
+    out->F4_rms       = F4;
+    out->F5_thd       = F5;
+}
+
 #if USE_DMA
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc) {
     if (hadc->Instance == ADC1) {
