@@ -13,6 +13,20 @@ A high-performance, real-time Fast Fourier Transform (FFT) implementation on the
 *   **Live Monitoring**: Outputs Peak Frequency, Magnitude, and Temperature via UART for real-time analysis on a PC.
 *   **Performance Verified**: Optimized to run within the sampling period (Processing time < 110ms @ 4.6kHz Sampling).
 *   **Safety First**: Includes critical section handling to prevent race conditions between DMA interrupts and main loop processing.
+*   **A-to-B Communication**: Extracts 5 key features (Peak, Sideband, Harmonic, RMS, THD) and transmits them to another STM32 board via **SPI**.
+*   **Python Visualizer**: Custom Python script for real-time spectrum analysis and feature monitoring (F1~F5).
+
+## 📊 Result Visualization
+
+![Real-Time FFT Spectrum](Images/fft_visualization_demo.png)
+
+*   **Real-Time Spectrum**: 860Hz Sine Wave Input.
+*   **Feature Extraction**:
+    *   **F1 (Peak)**: Fundamental Frequency Magnitude.
+    *   **F2 (Sideband)**: Max Sideband Magnitude.
+    *   **F3 (Harmonic)**: 3rd Harmonic Magnitude (0 if > Nyquist).
+    *   **F4 (RMS)**: Time-Domain RMS.
+    *   **F5 (THD)**: Total Harmonic Distortion.
 
 ## 🛠 Hardware Requirements
 
@@ -29,6 +43,10 @@ A high-performance, real-time Fast Fourier Transform (FFT) implementation on the
 | **PA2** | USART2_TX | UART Debug Output (115200 bps / 460800 bps) |
 | **PA3** | USART2_RX | UART Debug Input |
 | **PA5** | LD2 (LED) | Timing Measurement / Status LED |
+| **PB13** | SPI2_SCK | SPI Clock Output (Master) |
+| **PB14** | SPI2_MISO | SPI Data Input (Master) |
+| **PB15** | SPI2_MOSI | SPI Data Output (Master) |
+| **PB12** | SPI2_NSS | SPI Chip Select (Software Control) |
 
 > [!WARNING]
 > **Input Voltage Warning**: The ADC input range is **0V to 3.3V**. Do NOT apply negative voltage or voltage exceeding 3.3V. Ensure your signal has a proper DC offset (e.g., 1.65V).
@@ -100,6 +118,30 @@ You can switch between DMA and Polling modes to observe the importance of DMA in
 > **Analysis**:
 > Even though the maximum FPS is limited by the physical sampling time (~220ms), **DMA Mode** maintains a stable frame rate because data acquisition never stops.
 > **Polling Mode** suffers from significant frame drops (down to 1.9 FPS) because the CPU stops capturing data while processing the FFT, leading to "Blind Time" where signal changes are completely missed.
+
+## 📡 A-to-B Communication (SPI)
+
+This project acts as the **Master** (STM32_A) sending analyzed feature data to a **Slave** (STM32_B) via SPI.
+
+*   **Protocol**: SPI Mode 0, 8-bit, MSB First.
+*   **Baud Rate**: Low speed (Prescaler 256) for signal stability.
+*   **Packet Structure** (22 Bytes):
+    *   **Header**: `0xAA`, `0xBB` (Synchronization)
+    *   **Payload**: 5 x `float` (20 Bytes) - `[F1, F2, F3, F4, F5]`
+*   **Features**:
+    *   **F1**: Peak Frequency Magnitude
+    *   **F2**: Sideband Magnitude
+    *   **F3**: Harmonic Magnitude
+    *   **F4**: RMS (Time Domain)
+    *   **F5**: THD (Total Harmonic Distortion)
+
+### 🔧 Troubleshooting
+If you encounter issues with SPI communication (e.g., data corruption, OVR/MODF errors), please refer to the detailed **[SPI Troubleshooting Guide](Docs/SPI_troubleshooting.md)**.
+It covers solutions for:
+*   NSS Pin Configuration
+*   Overrun & Mode Fault Errors
+*   Data Synchronization (Bit Shift)
+*   **Signal Integrity (Ringing) & GPIO Speed**
 
 ## 🧠 Technical Details
 
