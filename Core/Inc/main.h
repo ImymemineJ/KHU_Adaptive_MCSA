@@ -38,6 +38,7 @@ extern "C" {
 /* USER CODE BEGIN ET */
 typedef struct {
     float F1_peak;      // Fundamental Frequency Magnitude
+    float F1_index;     // Fundamental Frequency Index (Added for SPI)
     float F1_freq;      // Fundamental Frequency (Hz)
     float F2_sideband;  // Sideband Magnitude
     float F2_index;     // Sideband Index (For SPI/STM32_B)

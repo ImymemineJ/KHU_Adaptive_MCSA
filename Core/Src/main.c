@@ -221,21 +221,22 @@ int main(void)
 
       // 6. Send Features to STM32_B via SPI2
       // Prepare SPI Packet with Header
-      // Requested Structure: Header(2) + F1_peak + F2_sideband + F2_index + F3_harmonic + F4_rms + F5_thd + Temp
-      // Total = 2 + (7 * 4) = 30 bytes
-      uint8_t spi_packet[30];
+      // Requested Structure: Header(2) + F1_peak + F1_index + F2_sideband + F2_index + F3_harmonic + F4_rms + F5_thd + Temp
+      // Total = 2 + (8 * 4) = 34 bytes
+      uint8_t spi_packet[34];
       spi_packet[0] = 0xAA;
       spi_packet[1] = 0xBB;
       
       // Manually copy specific fields
       float* pSpiData = (float*)&spi_packet[2];
       pSpiData[0] = g_feat.F1_peak;
-      pSpiData[1] = g_feat.F2_sideband;
-      pSpiData[2] = g_feat.F2_index;
-      pSpiData[3] = g_feat.F3_harmonic;
-      pSpiData[4] = g_feat.F4_rms;
-      pSpiData[5] = g_feat.F5_thd;
-      pSpiData[6] = temperature;
+      pSpiData[1] = g_feat.F1_index; // Added F1_index
+      pSpiData[2] = g_feat.F2_sideband;
+      pSpiData[3] = g_feat.F2_index;
+      pSpiData[4] = g_feat.F3_harmonic;
+      pSpiData[5] = g_feat.F4_rms;
+      pSpiData[6] = g_feat.F5_thd;
+      pSpiData[7] = temperature;
 
       // Transmit Data (NSS handled by Hardware)
       HAL_SPI_Transmit(&hspi2, spi_packet, sizeof(spi_packet), 10);
@@ -254,8 +255,20 @@ int main(void)
       // 3. Send Temperature Data (1 float)
       HAL_UART_Transmit(&huart2, (uint8_t*)&temperature, sizeof(float32_t), 100);
 
-      // 4. Send Feature Packet (5 floats)
-      HAL_UART_Transmit(&huart2, (uint8_t*)&g_feat, sizeof(FeaturePacket), 100);
+      // 4. Send Feature Packet (9 floats - Exclude F1_index for Python compatibility)
+      // Python expects: F1_mag, F1_freq, F2_mag, F2_idx, F2_freq, F3_mag, F3_freq, F4, F5
+      float uart_feat[9];
+      uart_feat[0] = g_feat.F1_peak;
+      uart_feat[1] = g_feat.F1_freq;
+      uart_feat[2] = g_feat.F2_sideband;
+      uart_feat[3] = g_feat.F2_index;
+      uart_feat[4] = g_feat.F2_freq;
+      uart_feat[5] = g_feat.F3_harmonic;
+      uart_feat[6] = g_feat.F3_freq;
+      uart_feat[7] = g_feat.F4_rms;
+      uart_feat[8] = g_feat.F5_thd;
+      
+      HAL_UART_Transmit(&huart2, (uint8_t*)uart_feat, sizeof(uart_feat), 100);
 #else
       // =========================================================================
       // Text Mode: Send Peak Frequency Info + Temperature + Features
@@ -627,6 +640,7 @@ void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* 
     max_idx += 1; // Adjust for offset because we started search from index 1
     
     feat->F1_peak = max_val;
+    feat->F1_index = (float32_t)max_idx; // Store Index
     feat->F1_freq = (float32_t)max_idx * 4096.0f / (float32_t)FFT_LEN;
     
     // F2: Sideband Magnitude (Targeted Search using 1/7 Rule)
