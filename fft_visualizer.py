@@ -9,7 +9,7 @@ import time
 # ==============================================================================
 # Configuration
 # ==============================================================================
-SERIAL_PORT = 'COM5'  # Change this to your STM32 COM port
+SERIAL_PORT = 'COM12'  # Change this to your STM32 COM port
 BAUD_RATE = 460800    # Must match STM32 setting
 FFT_LEN = 512
 DATA_LEN = FFT_LEN // 2
@@ -105,6 +105,7 @@ def main():
         
         ax.set_ylim(0, 500000) # Initial Y-axis limit
         ax.set_xlim(0, FS/2)
+        ax.axvline(x=60, color='red', linestyle='--', alpha=0.8) # 60Hz Marker
         ax.set_title("Real-Time FFT Spectrum")
         ax.set_xlabel("Frequency (Hz)")
         ax.set_ylabel("Magnitude")
