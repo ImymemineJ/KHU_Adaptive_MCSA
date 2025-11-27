@@ -623,38 +623,64 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 #endif
 
 void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* feat) {
-    // F1: Peak Frequency Magnitude (Target: 60Hz)
-    // Fs = 4096Hz, FFT_LEN = 512 -> Resolution = 8Hz
-    // 60Hz is around index 7.5 (Index 7=56Hz, Index 8=64Hz)
-    // Search range: Index 6 to 9 (48Hz ~ 72Hz)
-    float32_t max_val = 0.0f;
-    uint32_t max_idx = 7; // Default to closest integer index
-
-    for (uint32_t i = 6; i <= 9; i++) {
-        if (fft_mag[i] > max_val) {
-            max_val = fft_mag[i];
-            max_idx = i;
-        }
-    }
+    // F1: Peak Frequency Magnitude (Global Peak)
+    // Skip DC (index 0)
+    float32_t max_val;
+    uint32_t max_idx;
+    arm_max_f32(&fft_mag[1], (FFT_LEN / 2) - 1, &max_val, &max_idx);
+    max_idx += 1; // Adjust for offset because we started search from index 1
     
     feat->F1_peak = max_val;
     
-    // F2: Sideband Magnitude (Highest peak in F1 +/- 5Hz)
-    // Fs = 4096Hz, FFT_LEN = 512 -> Bin Resolution = 8Hz
-    // +/- 5Hz is less than 1 bin resolution. So we check adjacent bins +/- 1.
-    float32_t sb_max = 0.0f;
-    int search_width = 1; 
+    // F2: Sideband Magnitude (Targeted Search using 1/7 Rule)
+    // 1/7 Rule: Mechanical Frequency (fr) = Electrical Frequency (fs) / 7
+    // Sidebands appear at fs +/- k * fr (where k = 1, 3, 5...)
+    // We search around these candidate positions relative to F1.
     
-    for (int i = -search_width; i <= search_width; i++) {
-        if (i == 0) continue; // Skip F1 itself
-        int idx = (int)max_idx + i;
-        if (idx > 0 && idx < (FFT_LEN / 2)) {
-            if (fft_mag[idx] > sb_max) {
-                sb_max = fft_mag[idx];
+    float32_t sb_max = 0.0f;
+    uint32_t sb_idx = 0;
+    
+    // Calculate Machine Frequency Index (fr_idx)
+    // max_idx is F1 (fs). fr_idx = fs / 7
+    uint32_t fr_idx = max_idx / 7;
+    
+    // Candidate multipliers: 1 (Shaft/Unbalance), 3 (Outer Race), 5 (Inner Race)
+    int multipliers[] = {1, 3, 5};
+    
+    for (int k = 0; k < 3; k++) {
+        int dist_idx = fr_idx * multipliers[k]; // Distance from F1
+        
+        // Check both Left (-) and Right (+) sidebands
+        int signs[] = {-1, 1};
+        for (int s = 0; s < 2; s++) {
+            int center_idx = (int)max_idx + (dist_idx * signs[s]);
+            
+            // Search +/- 1 index around the candidate center
+            for (int offset = -1; offset <= 1; offset++) {
+                int target_idx = center_idx + offset;
+                
+                // Boundary Check
+                if (target_idx > 0 && target_idx < (FFT_LEN / 2)) {
+                    // Skip F1 itself (just in case)
+                    if (target_idx == max_idx) continue;
+                    
+                    if (fft_mag[target_idx] > sb_max) {
+                        sb_max = fft_mag[target_idx];
+                        sb_idx = target_idx;
+                    }
+                }
             }
         }
     }
+    
     feat->F2_sideband = sb_max;
+    
+    // Calculate F2 Frequency
+    if (sb_max > 0.0f) {
+        feat->F2_freq = (float32_t)sb_idx * 4096.0f / (float32_t)FFT_LEN;
+    } else {
+        feat->F2_freq = 0.0f;
+    }
 
     // F3: 3rd Harmonic Magnitude
     // Harmonic Index = 3 * Fundamental Index

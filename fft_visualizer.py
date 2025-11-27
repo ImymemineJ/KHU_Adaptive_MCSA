@@ -48,21 +48,18 @@ class SerialReader:
                         if sync_buf[-4:] == b'\xff\xff\xff\xff':
                             break # Found header!
                         
-                        # Keep only last 3 bytes to append next one
-                        sync_buf = sync_buf[-3:]
+                # 2. Read Data Payload (FFT_LEN/2 floats + 1 float for Temp + 6 floats for Features)
+                # FFT_LEN = 512 -> 256 floats for FFT + 1 float for Temp + 6 floats for Features = 263 floats
+                # 263 * 4 = 1052 bytes
+                raw_data = self.ser.read((DATA_LEN + 1 + 6) * 4)
                 
-                # 2. Read Data Payload (FFT_LEN/2 floats + 1 float for Temp + 5 floats for Features)
-                # FFT_LEN = 512 -> 256 floats for FFT + 1 float for Temp + 5 floats for Features = 262 floats
-                # 262 * 4 = 1048 bytes
-                raw_data = self.ser.read((DATA_LEN + 1 + 5) * 4)
-                
-                if len(raw_data) == (DATA_LEN + 1 + 5) * 4:
+                if len(raw_data) == (DATA_LEN + 1 + 6) * 4:
                     # Unpack binary data to float array
-                    floats = struct.unpack(f'{DATA_LEN + 1 + 5}f', raw_data)
+                    floats = struct.unpack(f'{DATA_LEN + 1 + 6}f', raw_data)
                     
                     fft_data = floats[:DATA_LEN]
                     temp_val = floats[DATA_LEN]
-                    features = floats[DATA_LEN+1:] # F1~F5
+                    features = floats[DATA_LEN+1:] # F1, F2_mag, F2_freq, F3, F4, F5
                     
                     # Basic sanity check: Magnitude shouldn't be infinite or NaN
                     if np.all(np.isfinite(fft_data)):
@@ -127,7 +124,7 @@ def main():
                 y_data = reader.data.copy()
                 total_frames = reader.frame_count
                 temp = reader.temperature
-                feats = getattr(reader, 'features', [0.0]*5)
+                feats = getattr(reader, 'features', [0.0]*6)
             
             # Calculate FPS based on reader's frame count
             now = time.time()
@@ -160,9 +157,10 @@ def main():
                          f"Features:\n"
                          f"F1 (Peak): {feats[0]:.0f}\n"
                          f"F2 (Side): {feats[1]:.0f}\n"
-                         f"F3 (Harm): {feats[2]:.0f}\n"
-                         f"F4 (RMS):  {feats[3]:.0f}\n"
-                         f"F5 (THD):  {feats[4]*100:.2f}%")
+                         f"F2 (Freq): {feats[2]:.1f}Hz\n"
+                         f"F3 (Harm): {feats[3]:.0f}\n"
+                         f"F4 (RMS):  {feats[4]:.0f}\n"
+                         f"F5 (THD):  {feats[5]*100:.2f}%")
             text_box.set_text(info_text)
                 
             return line, text_box
