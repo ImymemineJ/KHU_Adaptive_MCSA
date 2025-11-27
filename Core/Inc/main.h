@@ -38,8 +38,12 @@ extern "C" {
 /* USER CODE BEGIN ET */
 typedef struct {
     float F1_peak;      // Fundamental Frequency Magnitude
+    float F1_freq;      // Fundamental Frequency (Hz)
     float F2_sideband;  // Sideband Magnitude
+    float F2_index;     // Sideband Index (For SPI/STM32_B)
+    float F2_freq;      // Sideband Frequency (Hz)
     float F3_harmonic;  // 3rd Harmonic Magnitude
+    float F3_freq;      // 3rd Harmonic Frequency (Hz)
     float F4_rms;       // Time Domain RMS
     float F5_thd;       // Total Harmonic Distortion
 } FeaturePacket;

@@ -56,7 +56,7 @@ UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
 #define USE_DMA 1 // 1: DMA (Double Buffering), 0: Polling (Data Loss)
-#define VISUALIZER_MODE 1 // 1: Binary Output for Python Visualizer (460800bps), 0: Text Output (115200bps)
+#define VISUALIZER_MODE 1 // 1: Binary Output for Python Visualizer (230400bps), 0: Text Output (115200bps)
 #define FFT_LEN  512 // Reduced from 1024 to prevent RAM overflow (2 channels * 2 buffers)
 
 #if USE_DMA
@@ -85,7 +85,7 @@ static void MX_CRC_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_SPI2_Init(void);
 /* USER CODE BEGIN PFP */
-
+void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* feat);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -221,20 +221,24 @@ int main(void)
 
       // 6. Send Features to STM32_B via SPI2
       // Prepare SPI Packet with Header
-      uint8_t spi_packet[22];
+      // Requested Structure: Header(2) + F1_peak + F2_sideband + F2_index + F3_harmonic + F4_rms + F5_thd + Temp
+      // Total = 2 + (7 * 4) = 30 bytes
+      uint8_t spi_packet[30];
       spi_packet[0] = 0xAA;
       spi_packet[1] = 0xBB;
-      memcpy(&spi_packet[2], &g_feat, sizeof(FeaturePacket));
-
-      // Pull NSS Low
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET); 
       
-      // Small delay for stability (approx 10-20us)
-      for(volatile int k=0; k<100; k++) { __NOP(); } 
-      // Transmit Data
-      HAL_SPI_Transmit(&hspi2, spi_packet, 22, 10);
-      // Pull NSS High
-      HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
+      // Manually copy specific fields
+      float* pSpiData = (float*)&spi_packet[2];
+      pSpiData[0] = g_feat.F1_peak;
+      pSpiData[1] = g_feat.F2_sideband;
+      pSpiData[2] = g_feat.F2_index;
+      pSpiData[3] = g_feat.F3_harmonic;
+      pSpiData[4] = g_feat.F4_rms;
+      pSpiData[5] = g_feat.F5_thd;
+      pSpiData[6] = temperature;
+
+      // Transmit Data (NSS handled by Hardware)
+      HAL_SPI_Transmit(&hspi2, spi_packet, sizeof(spi_packet), 10);
       
 #if VISUALIZER_MODE
       // =========================================================================
@@ -372,7 +376,7 @@ static void MX_ADC1_Init(void)
   */
   sConfig.Channel = ADC_CHANNEL_0;
   sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_71CYCLES_5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -440,7 +444,7 @@ static void MX_SPI2_Init(void)
   hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi2.Init.NSS = SPI_NSS_SOFT;
+  hspi2.Init.NSS = SPI_NSS_HARD_OUTPUT;
   hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
   hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
@@ -517,11 +521,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-#if VISUALIZER_MODE
-  huart2.Init.BaudRate = 460800;
-#else
-  huart2.Init.BaudRate = 115200;
-#endif
+  huart2.Init.BaudRate = 230400; // Lowered to 230400 for stability
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -575,9 +575,6 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_SET);
-
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
@@ -590,13 +587,6 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PB12 */
-  GPIO_InitStruct.Pin = GPIO_PIN_12;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
@@ -620,42 +610,85 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
         fft_data_ready = 2; // Second half ready
     }
 }
+
+void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
+{
+    // Toggle LD2 fast to indicate error
+    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+}
 #endif
 
 void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* feat) {
-    // F1: Peak Frequency Magnitude
+    // F1: Peak Frequency Magnitude (Global Peak)
     // Skip DC (index 0)
     float32_t max_val;
     uint32_t max_idx;
     arm_max_f32(&fft_mag[1], (FFT_LEN / 2) - 1, &max_val, &max_idx);
-    max_idx += 1; // Adjust for offset
+    max_idx += 1; // Adjust for offset because we started search from index 1
     
     feat->F1_peak = max_val;
+    feat->F1_freq = (float32_t)max_idx * 4096.0f / (float32_t)FFT_LEN;
     
-    // F2: Sideband Magnitude (Highest peak in F1 +/- 5Hz)
-    // Fs = 4096Hz, FFT_LEN = 512 -> Bin Resolution = 8Hz
-    // +/- 5Hz is less than 1 bin resolution. So we check adjacent bins +/- 1.
+    // F2: Sideband Magnitude (Targeted Search using 1/7 Rule)
+    // 1/7 Rule: Mechanical Frequency (fr) = Electrical Frequency (fs) / 7
+    // Sidebands appear at fs +/- k * fr (where k = 1, 3, 5...)
+    // We search around these candidate positions relative to F1.
+    
     float32_t sb_max = 0.0f;
-    int search_width = 1; 
+    uint32_t sb_idx = 0;
     
-    for (int i = -search_width; i <= search_width; i++) {
-        if (i == 0) continue; // Skip F1 itself
-        int idx = (int)max_idx + i;
-        if (idx > 0 && idx < (FFT_LEN / 2)) {
-            if (fft_mag[idx] > sb_max) {
-                sb_max = fft_mag[idx];
+    // Calculate Machine Frequency Index (fr_idx)
+    // max_idx is F1 (fs). fr_idx = fs / 7
+    uint32_t fr_idx = max_idx / 7;
+    
+    // Candidate multipliers: 1 (Shaft/Unbalance), 3 (Outer Race), 5 (Inner Race)
+    int multipliers[] = {1, 3, 5};
+    
+    for (int k = 0; k < 3; k++) {
+        int dist_idx = fr_idx * multipliers[k]; // Distance from F1
+        
+        // Check both Left (-) and Right (+) sidebands
+        int signs[] = {-1, 1};
+        for (int s = 0; s < 2; s++) {
+            int center_idx = (int)max_idx + (dist_idx * signs[s]);
+            
+            // Search +/- 5 index around the candidate center to catch offset peaks
+            for (int offset = -5; offset <= 5; offset++) {
+                int target_idx = center_idx + offset;
+                
+                // Boundary Check
+                if (target_idx > 0 && target_idx < (FFT_LEN / 2)) {
+                    // Skip F1 itself (just in case)
+                    if (target_idx == max_idx) continue;
+                    
+                    if (fft_mag[target_idx] > sb_max) {
+                        sb_max = fft_mag[target_idx];
+                        sb_idx = target_idx;
+                    }
+                }
             }
         }
     }
+    
     feat->F2_sideband = sb_max;
+    feat->F2_index = (float32_t)sb_idx; // Store Index for SPI
+    
+    // Calculate F2 Frequency
+    if (sb_max > 0.0f) {
+        feat->F2_freq = (float32_t)sb_idx * 4096.0f / (float32_t)FFT_LEN;
+    } else {
+        feat->F2_freq = 0.0f;
+    }
 
     // F3: 3rd Harmonic Magnitude
     // Harmonic Index = 3 * Fundamental Index
     int h3_idx = max_idx * 3;
     if (h3_idx < (FFT_LEN / 2)) {
         feat->F3_harmonic = fft_mag[h3_idx];
+        feat->F3_freq = (float32_t)h3_idx * 4096.0f / (float32_t)FFT_LEN;
     } else {
         feat->F3_harmonic = 0.0f;
+        feat->F3_freq = 0.0f;
     }
 
     // F4: RMS (Time Domain)
