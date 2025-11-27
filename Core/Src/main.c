@@ -59,7 +59,7 @@ UART_HandleTypeDef huart2;
 #define VISUALIZER_MODE                                                        \
   1 // 1: Binary Output for Python Visualizer (230400bps), 0: Text Output
     // (115200bps)
-#define FFT_LEN
+
 #define MAX_FFT_LEN                                                            \
   512 // Reduced from 1024 to prevent RAM overflow (2 channels * 2 buffers)
 uint16_t current_fft_len = 256;        // Default to Normal Mode
@@ -97,6 +97,7 @@ void Update_Sampling_Rate(uint8_t command);
 void Reinit_FFT(uint16_t new_len);
 void Configure_ADC_Timer(uint32_t sampling_rate);
 void Calculate_Features(float32_t *fft_mag, float32_t *time_sig,
+                        uint16_t fft_len, uint32_t sampling_rate,
                         FeaturePacket *feat);
 /* USER CODE END PFP */
 
@@ -149,7 +150,7 @@ int main(void) {
 #if USE_DMA
   // Start ADC with DMA (Circular Mode)
   // Length = FFT_LEN * 4 (2 Channels * 2 Buffers)
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buffer, FFT_LEN * 4);
+  HAL_ADC_Start_DMA(&hadc1, (uint32_t *)adc_buffer, current_fft_len * 4);
 #else
   HAL_ADC_Start(
       &hadc1); // Start ADC in Interrupt/Polling mode (Triggered by Timer)
@@ -216,7 +217,7 @@ int main(void) {
       // CH0 = Signal, CH1 = Temperature
       uint32_t temp_sum = 0;
 
-      for (int i = 0; i < FFT_LEN; i++) {
+      for (int i = 0; i < current_fft_len; i++) {
         // Even indices (0, 2, 4...) -> Signal (CH0)
         fft_input_buffer[i] = (float32_t)src_buffer[2 * i];
 
@@ -237,7 +238,8 @@ int main(void) {
       arm_cmplx_mag_f32(fft_output_buffer, fft_magnitude, current_fft_len / 2);
 
       // 5. Feature Extraction (F1~F5)
-      Calculate_Features(fft_magnitude, fft_input_buffer, &g_feat);
+      Calculate_Features(fft_magnitude, fft_input_buffer, current_fft_len,
+                         current_sampling_rate, &g_feat);
 
       // 6. Send Features to STM32_B via SPI2
       // Prepare SPI Packet with Header
@@ -282,7 +284,7 @@ int main(void) {
                ((MAX_FFT_LEN - current_fft_len) / 2) * sizeof(float32_t));
       }
       HAL_UART_Transmit(&huart2, (uint8_t *)fft_magnitude,
-                        (FFT_LEN / 2) * sizeof(float32_t), 1000);
+                        (current_fft_len / 2) * sizeof(float32_t), 1000);
 
       // 3. Send Temperature Data (1 float)
       HAL_UART_Transmit(&huart2, (uint8_t *)&temperature, sizeof(float32_t),
@@ -669,17 +671,19 @@ void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc) {
 #endif
 
 void Calculate_Features(float32_t *fft_mag, float32_t *time_sig,
+                        uint16_t fft_len, uint32_t sampling_rate,
                         FeaturePacket *feat) {
   // F1: Peak Frequency Magnitude (Global Peak)
   // Skip DC (index 0)
   float32_t max_val;
   uint32_t max_idx;
-  arm_max_f32(&fft_mag[1], (FFT_LEN / 2) - 1, &max_val, &max_idx);
+  arm_max_f32(&fft_mag[1], (fft_len / 2) - 1, &max_val, &max_idx);
   max_idx += 1; // Adjust for offset because we started search from index 1
 
   feat->F1_peak = max_val;
   feat->F1_index = (float32_t)max_idx; // Store Index
-  feat->F1_freq = (float32_t)max_idx * 4096.0f / (float32_t)FFT_LEN;
+  feat->F1_freq =
+      (float32_t)max_idx * (float32_t)sampling_rate / (float32_t)fft_len;
 
   // F2: Sideband Magnitude (Targeted Search using 1/7 Rule)
   // 1/7 Rule: Mechanical Frequency (fr) = Electrical Frequency (fs) / 7
@@ -709,7 +713,7 @@ void Calculate_Features(float32_t *fft_mag, float32_t *time_sig,
         int target_idx = center_idx + offset;
 
         // Boundary Check
-        if (target_idx > 0 && target_idx < (FFT_LEN / 2)) {
+        if (target_idx > 0 && target_idx < (fft_len / 2)) {
           // Skip F1 itself (just in case)
           if (target_idx == max_idx)
             continue;
@@ -728,7 +732,8 @@ void Calculate_Features(float32_t *fft_mag, float32_t *time_sig,
 
   // Calculate F2 Frequency
   if (sb_max > 0.0f) {
-    feat->F2_freq = (float32_t)sb_idx * 4096.0f / (float32_t)FFT_LEN;
+    feat->F2_freq =
+        (float32_t)sb_idx * (float32_t)sampling_rate / (float32_t)fft_len;
   } else {
     feat->F2_freq = 0.0f;
   }
@@ -736,9 +741,10 @@ void Calculate_Features(float32_t *fft_mag, float32_t *time_sig,
   // F3: 3rd Harmonic Magnitude
   // Harmonic Index = 3 * Fundamental Index
   int h3_idx = max_idx * 3;
-  if (h3_idx < (FFT_LEN / 2)) {
+  if (h3_idx < (fft_len / 2)) {
     feat->F3_harmonic = fft_mag[h3_idx];
-    feat->F3_freq = (float32_t)h3_idx * 4096.0f / (float32_t)FFT_LEN;
+    feat->F3_freq =
+        (float32_t)h3_idx * (float32_t)sampling_rate / (float32_t)fft_len;
   } else {
     feat->F3_harmonic = 0.0f;
     feat->F3_freq = 0.0f;
@@ -747,10 +753,10 @@ void Calculate_Features(float32_t *fft_mag, float32_t *time_sig,
   // F4: RMS (Time Domain)
   // sqrt( sum(x^2) / N )
   float32_t sum_sq = 0.0f;
-  for (int i = 0; i < FFT_LEN; i++) {
+  for (int i = 0; i < fft_len; i++) {
     sum_sq += time_sig[i] * time_sig[i];
   }
-  float32_t mean_sq = sum_sq / (float32_t)FFT_LEN;
+  float32_t mean_sq = sum_sq / (float32_t)fft_len;
   arm_sqrt_f32(mean_sq, &feat->F4_rms);
 
   // F5: THD (Total Harmonic Distortion)
@@ -759,7 +765,7 @@ void Calculate_Features(float32_t *fft_mag, float32_t *time_sig,
   float32_t harm_energy = 0.0f;
   for (int h = 2; h <= 5; h++) {
     int h_idx = max_idx * h;
-    if (h_idx < (FFT_LEN / 2)) {
+    if (h_idx < (fft_len / 2)) {
       harm_energy += fft_mag[h_idx] * fft_mag[h_idx];
     }
   }
