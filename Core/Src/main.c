@@ -623,12 +623,19 @@ void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
 #endif
 
 void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* feat) {
-    // F1: Peak Frequency Magnitude
-    // Skip DC (index 0)
-    float32_t max_val;
-    uint32_t max_idx;
-    arm_max_f32(&fft_mag[1], (FFT_LEN / 2) - 1, &max_val, &max_idx);
-    max_idx += 1; // Adjust for offset
+    // F1: Peak Frequency Magnitude (Target: 60Hz)
+    // Fs = 4096Hz, FFT_LEN = 512 -> Resolution = 8Hz
+    // 60Hz is around index 7.5 (Index 7=56Hz, Index 8=64Hz)
+    // Search range: Index 6 to 9 (48Hz ~ 72Hz)
+    float32_t max_val = 0.0f;
+    uint32_t max_idx = 7; // Default to closest integer index
+
+    for (uint32_t i = 6; i <= 9; i++) {
+        if (fft_mag[i] > max_val) {
+            max_val = fft_mag[i];
+            max_idx = i;
+        }
+    }
     
     feat->F1_peak = max_val;
     
