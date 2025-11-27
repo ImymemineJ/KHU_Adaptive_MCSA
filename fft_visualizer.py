@@ -9,7 +9,7 @@ import time
 # ==============================================================================
 # Configuration
 # ==============================================================================
-SERIAL_PORT = 'COM5'  # Change this to your STM32 COM port
+SERIAL_PORT = '/dev/tty.usbmodem1303'  # Change this to your STM32 COM port
 BAUD_RATE = 460800    # Must match STM32 setting
 FFT_LEN = 512
 DATA_LEN = FFT_LEN // 2
