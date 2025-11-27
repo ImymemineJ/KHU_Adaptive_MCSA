@@ -10,7 +10,7 @@ import time
 # Configuration
 # ==============================================================================
 SERIAL_PORT = 'COM12'  # Change this to your STM32 COM port
-BAUD_RATE = 460800    # Must match STM32 setting
+BAUD_RATE = 230400    # Must match STM32 setting
 FFT_LEN = 512
 DATA_LEN = FFT_LEN // 2
 FS = 4096.0           # Sampling Frequency
@@ -48,18 +48,18 @@ class SerialReader:
                         if sync_buf[-4:] == b'\xff\xff\xff\xff':
                             break # Found header!
                         
-                # 2. Read Data Payload (FFT_LEN/2 floats + 1 float for Temp + 6 floats for Features)
-                # FFT_LEN = 512 -> 256 floats for FFT + 1 float for Temp + 6 floats for Features = 263 floats
-                # 263 * 4 = 1052 bytes
-                raw_data = self.ser.read((DATA_LEN + 1 + 6) * 4)
+                # 2. Read Data Payload (FFT_LEN/2 floats + 1 float for Temp + 9 floats for Features)
+                # FFT_LEN = 512 -> 256 floats for FFT + 1 float for Temp + 9 floats for Features = 266 floats
+                # 266 * 4 = 1064 bytes
+                raw_data = self.ser.read((DATA_LEN + 1 + 9) * 4)
                 
-                if len(raw_data) == (DATA_LEN + 1 + 6) * 4:
+                if len(raw_data) == (DATA_LEN + 1 + 9) * 4:
                     # Unpack binary data to float array
-                    floats = struct.unpack(f'{DATA_LEN + 1 + 6}f', raw_data)
+                    floats = struct.unpack(f'{DATA_LEN + 1 + 9}f', raw_data)
                     
                     fft_data = floats[:DATA_LEN]
                     temp_val = floats[DATA_LEN]
-                    features = floats[DATA_LEN+1:] # F1, F2_mag, F2_freq, F3, F4, F5
+                    features = floats[DATA_LEN+1:] # F1_mag, F1_freq, F2_mag, F2_idx, F2_freq, F3_mag, F3_freq, F4, F5
                     
                     # Basic sanity check: Magnitude shouldn't be infinite or NaN
                     if np.all(np.isfinite(fft_data)):
@@ -124,7 +124,7 @@ def main():
                 y_data = reader.data.copy()
                 total_frames = reader.frame_count
                 temp = reader.temperature
-                feats = getattr(reader, 'features', [0.0]*6)
+                feats = getattr(reader, 'features', [0.0]*9)
             
             # Calculate FPS based on reader's frame count
             now = time.time()
@@ -155,12 +155,11 @@ def main():
             # Update Text Box
             info_text = (f"Temp: {temp:.1f} C\n\n"
                          f"Features:\n"
-                         f"F1 (Peak): {feats[0]:.0f}\n"
-                         f"F2 (Side): {feats[1]:.0f}\n"
-                         f"F2 (Freq): {feats[2]:.1f}Hz\n"
-                         f"F3 (Harm): {feats[3]:.0f}\n"
-                         f"F4 (RMS):  {feats[4]:.0f}\n"
-                         f"F5 (THD):  {feats[5]*100:.2f}%")
+                         f"F1 (Peak): {feats[0]:.0f} ({feats[1]:.1f}Hz)\n"
+                         f"F2 (Side): {feats[2]:.0f} ({feats[4]:.1f}Hz)\n"
+                         f"F3 (Harm): {feats[5]:.0f} ({feats[6]:.1f}Hz)\n"
+                         f"F4 (RMS):  {feats[7]:.0f}\n"
+                         f"F5 (THD):  {feats[8]*100:.2f}%")
             text_box.set_text(info_text)
                 
             return line, text_box
