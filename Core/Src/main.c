@@ -2,17 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.c
-  * @brief          : Main program body
-  ******************************************************************************
-  * @attention
-  *
-  * Copyright (c) 2025 STMicroelectronics.
-  * All rights reserved.
-  *
-  * This software is licensed under terms that can be found in the LICENSE file
-  * in the root directory of this software component.
-  * If no LICENSE file comes with this software, it is provided AS-IS.
-  *
+  * @brief          : Main program body (Register Level)
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -23,8 +13,8 @@
 /* USER CODE BEGIN Includes */
 #define ARM_MATH_CM3
 #include "arm_math.h"
-#include <stdio.h> // For sprintf
-#include <string.h> // For memcpy
+#include <stdio.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -34,7 +24,8 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define FFT_LEN  512
+#define ADC_BUF_LEN (FFT_LEN * 4) // 2 Channels * 2 Buffers (Ping-Pong)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -43,36 +34,18 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
-ADC_HandleTypeDef hadc1;
-DMA_HandleTypeDef hdma_adc1;
+// ADC Buffer (DMA Circular)
+uint16_t adc_buffer[ADC_BUF_LEN];
 
-CRC_HandleTypeDef hcrc;
-
-SPI_HandleTypeDef hspi2;
-
-TIM_HandleTypeDef htim3;
-
-UART_HandleTypeDef huart2;
-
-/* USER CODE BEGIN PV */
-#define USE_DMA 1 // 1: DMA (Double Buffering), 0: Polling (Data Loss)
-#define VISUALIZER_MODE 1 // 1: Binary Output for Python Visualizer (230400bps), 0: Text Output (115200bps)
-#define FFT_LEN  512 // Reduced from 1024 to prevent RAM overflow (2 channels * 2 buffers)
-
-#if USE_DMA
-// Double Buffered, 2 Channels (CH0: Signal, CH1: Temp)
-// Size = FFT_LEN * 2 (Ping-Pong) * 2 (Channels)
-uint16_t adc_buffer[FFT_LEN * 4]; 
-#else
-uint16_t adc_buffer[FFT_LEN * 2]; // Single Buffer for Polling (2 Channels)
-#endif
-
+// FFT Buffers
 float32_t fft_input_buffer[FFT_LEN];
 float32_t fft_output_buffer[FFT_LEN];
 float32_t fft_magnitude[FFT_LEN / 2];
+
 volatile uint8_t fft_data_ready = 0;
 arm_rfft_fast_instance_f32 S;
-FeaturePacket g_feat; // Global Feature Packet
+FeaturePacket g_feat;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -81,11 +54,16 @@ static void MX_GPIO_Init(void);
 static void MX_DMA_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
-static void MX_CRC_Init(void);
 static void MX_TIM3_Init(void);
 static void MX_SPI2_Init(void);
-/* USER CODE BEGIN PFP */
 void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* feat);
+
+// Helper Functions
+void UART_Send(uint8_t *data, uint16_t len);
+void SPI_Send(uint8_t *data, uint16_t len);
+
+/* USER CODE BEGIN PFP */
+
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -99,49 +77,31 @@ void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* 
   */
 int main(void)
 {
-
-  /* USER CODE BEGIN 1 */
-
-  /* USER CODE END 1 */
-
   /* MCU Configuration--------------------------------------------------------*/
 
   /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
-  HAL_Init();
-
-  /* USER CODE BEGIN Init */
-
-  /* USER CODE END Init */
+  // HAL_Init(); // Removed HAL_Init
 
   /* Configure the system clock */
   SystemClock_Config();
-
-  /* USER CODE BEGIN SysInit */
-
-  /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_DMA_Init();
   MX_USART2_UART_Init();
   MX_ADC1_Init();
-  MX_CRC_Init();
   MX_TIM3_Init();
   MX_SPI2_Init();
+
   /* USER CODE BEGIN 2 */
   arm_rfft_fast_init_f32(&S, FFT_LEN);
-  HAL_TIM_Base_Start(&htim3);
 
-#if USE_DMA
-  // Start ADC with DMA (Circular Mode)
-  // Length = FFT_LEN * 4 (2 Channels * 2 Buffers)
-  HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, FFT_LEN * 4);
-#else
-  HAL_ADC_Start(&hadc1); // Start ADC in Interrupt/Polling mode (Triggered by Timer)
-#endif
+  // Start TIM3 to trigger ADC
+  TIM3->CR1 |= TIM_CR1_CEN;
 
-  // Debug: Confirm UART is working at startup
-  HAL_UART_Transmit(&huart2, (uint8_t*)"UART Initialized v4 (ADC Fixed)\r\n", 33, 100);
+  // Debug: Confirm UART is working
+  char *msg = "UART Initialized (Register Mode)\r\n";
+  UART_Send((uint8_t*)msg, strlen(msg));
 
   /* USER CODE END 2 */
 
@@ -152,49 +112,24 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-#if USE_DMA
-    // =========================================================================
-    // DMA Mode (Double Buffering) - No Data Loss
-    // =========================================================================
     if (fft_data_ready) {
-      // Critical Section: Safely read and clear the flag to prevent race conditions
+      // Critical Section
       __disable_irq();
       uint8_t state = fft_data_ready;
       fft_data_ready = 0;
       __enable_irq();
 
-      // If state was 0 (unlikely but possible if interrupt happened before check), skip
       if (state == 0) continue;
 
-      // state 1: First half (0 to 2*FFT_LEN - 1) -> Contains FFT_LEN samples for 2 channels
+      // Determine buffer pointer
+      // state 1: First half (0 to 2*FFT_LEN - 1)
       // state 2: Second half (2*FFT_LEN to 4*FFT_LEN - 1)
       uint16_t* src_buffer = (state == 1) ? &adc_buffer[0] : &adc_buffer[FFT_LEN * 2];
-#else
-    // =========================================================================
-    // Polling Mode - Data Loss Occurs during Processing
-    // =========================================================================
-    // 1. Collect Data (Blocking)
-    // In this loop, CPU is busy waiting for ADC.
-    // We need to collect FFT_LEN samples for 2 channels = FFT_LEN * 2
-    for (int i = 0; i < FFT_LEN * 2; i++) {
-        // Wait for conversion (Triggered by TIM3)
-        HAL_ADC_PollForConversion(&hadc1, 100); 
-        adc_buffer[i] = (uint16_t)HAL_ADC_GetValue(&hadc1);
-    }
-    
-    // Set src_buffer to the single buffer
-    uint16_t* src_buffer = adc_buffer;
-    
-    // Fake the block to reuse processing code below
-    {
-#endif
 
       // 1. Start Timing Measurement (Toggle LD2 High)
-      HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_SET);
+      GPIOA->BSRR = GPIO_BSRR_BS5; // Set PA5
 
-      // 2. Convert ADC data (uint16_t) to float and Extract Temperature
-      // DMA stores data as: [CH0, CH1, CH0, CH1, ...]
-      // CH0 = Signal, CH1 = Temperature
+      // 2. Convert ADC data and Extract Temperature
       uint32_t temp_sum = 0;
       
       for (int i = 0; i < FFT_LEN; i++) {
@@ -205,10 +140,9 @@ int main(void)
         temp_sum += src_buffer[2 * i + 1];
       }
       
-      // Calculate Average Temperature
       float32_t temp_adc_avg = (float32_t)temp_sum / (float32_t)FFT_LEN;
       float32_t temp_volts = temp_adc_avg * 3.3f / 4095.0f;
-      float32_t temperature = temp_volts * 100.0f; // Assuming LM35 (10mV/C) or similar
+      float32_t temperature = temp_volts * 100.0f;
 
       // 3. Perform RFFT
       arm_rfft_fast_f32(&S, fft_input_buffer, fft_output_buffer, 0);
@@ -216,18 +150,14 @@ int main(void)
       // 4. Calculate Magnitude
       arm_cmplx_mag_f32(fft_output_buffer, fft_magnitude, FFT_LEN / 2);
       
-      // 5. Feature Extraction (F1~F5)
+      // 5. Feature Extraction
       Calculate_Features(fft_magnitude, fft_input_buffer, &g_feat);
 
       // 6. Send Features to STM32_B via SPI2
-      // Prepare SPI Packet with Header
-      // Requested Structure: Header(2) + F1_peak + F2_sideband + F2_index + F3_harmonic + F4_rms + F5_thd + Temp
-      // Total = 2 + (7 * 4) = 30 bytes
       uint8_t spi_packet[30];
       spi_packet[0] = 0xAA;
       spi_packet[1] = 0xBB;
       
-      // Manually copy specific fields
       float* pSpiData = (float*)&spi_packet[2];
       pSpiData[0] = g_feat.F1_peak;
       pSpiData[1] = g_feat.F2_sideband;
@@ -237,60 +167,29 @@ int main(void)
       pSpiData[5] = g_feat.F5_thd;
       pSpiData[6] = temperature;
 
-      // Transmit Data (NSS handled by Hardware)
-      HAL_SPI_Transmit(&hspi2, spi_packet, sizeof(spi_packet), 10);
+      SPI_Send(spi_packet, sizeof(spi_packet));
       
-#if VISUALIZER_MODE
-      // =========================================================================
-      // Visualizer Mode: Send Binary Data (Header + Float Array)
-      // =========================================================================
-      // 1. Send Header (0xFFFFFFFF) to sync
-      uint32_t header = 0xFFFFFFFF;
-      HAL_UART_Transmit(&huart2, (uint8_t*)&header, 4, 100);
+      // 7. Send Data to Visualizer via UART
+      // Header (0xABCD1234)
+      uint32_t header = 0xABCD1234;
+      UART_Send((uint8_t*)&header, 4);
 
-      // 2. Send FFT Magnitude Data (FFT_LEN/2 floats)
-      HAL_UART_Transmit(&huart2, (uint8_t*)fft_magnitude, (FFT_LEN / 2) * sizeof(float32_t), 1000);
+      // FFT Magnitude
+      UART_Send((uint8_t*)fft_magnitude, (FFT_LEN / 2) * sizeof(float32_t));
 
-      // 3. Send Temperature Data (1 float)
-      HAL_UART_Transmit(&huart2, (uint8_t*)&temperature, sizeof(float32_t), 100);
+      // Temperature
+      UART_Send((uint8_t*)&temperature, sizeof(float32_t));
 
-      // 4. Send Feature Packet (5 floats)
-      HAL_UART_Transmit(&huart2, (uint8_t*)&g_feat, sizeof(FeaturePacket), 100);
-#else
-      // =========================================================================
-      // Text Mode: Send Peak Frequency Info + Temperature + Features
-      // =========================================================================
-      // 5. Find Peak Frequency (UART Debug)
-      float32_t max_value;
-      uint32_t max_index;
-      // Skip DC component (Index 0)
-      arm_max_f32(&fft_magnitude[1], (FFT_LEN / 2) - 1, &max_value, &max_index);
-      
-      // Adjust index because we started from 1
-      max_index += 1;
-      
-      // Calculate Frequency: Freq = Index * Fs / FFT_LEN
-      // Fs = 4096 Hz (Calculated from TIM3 settings)
-      float32_t freq = (float32_t)max_index * 4096.0f / (float32_t)FFT_LEN;
-      
-      char uart_buf[200];
-      int len = sprintf(uart_buf, "Peak: %d.%d Hz, Mag: %d, Temp: %d.%d C\r\n"
-                                  "F1: %d, F2: %d, F3: %d, F4: %d, F5: %d\r\n", 
-                        (int)freq, (int)((freq - (int)freq) * 10), 
-                        (int)max_value, 
-                        (int)temperature, (int)((temperature - (int)temperature) * 10),
-                        (int)g_feat.F1_peak, (int)g_feat.F2_sideband, (int)g_feat.F3_harmonic,
-                        (int)g_feat.F4_rms, (int)(g_feat.F5_thd * 100)); // THD as percentage * 100 for int display
-      HAL_UART_Transmit(&huart2, (uint8_t*)uart_buf, len, 1000);
-#endif
+      // Feature Packet
+      UART_Send((uint8_t*)&g_feat, sizeof(FeaturePacket));
 
-      // 6. End Timing Measurement (Toggle LD2 Low)
-      HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+      // Footer (0x5555AAAA)
+      uint32_t footer = 0x5555AAAA;
+      UART_Send((uint8_t*)&footer, 4);
+
+      // 8. End Timing Measurement (Toggle LD2 Low)
+      GPIOA->BSRR = GPIO_BSRR_BR5; // Reset PA5
     }
-#if !USE_DMA
-    // End of fake block for Polling mode
-    }
-#endif
   }
   /* USER CODE END 3 */
 }
@@ -301,43 +200,35 @@ int main(void)
   */
 void SystemClock_Config(void)
 {
-  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
-  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
-  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
+  // 1. Enable HSI
+  RCC->CR |= RCC_CR_HSION;
+  while (!(RCC->CR & RCC_CR_HSIRDY));
 
-  /** Initializes the RCC Oscillators according to the specified parameters
-  * in the RCC_OscInitTypeDef structure.
-  */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI_DIV2;
-  RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL16;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  // 2. Configure PLL
+  // PLL Source = HSI / 2
+  // PLL Mul = 16 -> 8MHz / 2 * 16 = 64MHz
+  RCC->CFGR &= ~(RCC_CFGR_PLLSRC | RCC_CFGR_PLLXTPRE | RCC_CFGR_PLLMULL);
+  RCC->CFGR |= (RCC_CFGR_PLLMULL16); // HSI/2 is default source
 
-  /** Initializes the CPU, AHB and APB buses clocks
-  */
-  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
-                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
-  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  // 3. Enable PLL
+  RCC->CR |= RCC_CR_PLLON;
+  while (!(RCC->CR & RCC_CR_PLLRDY));
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC;
-  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV8;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  // 4. Flash Latency (2 Wait States for 64MHz)
+  FLASH->ACR |= FLASH_ACR_LATENCY_2;
+
+  // 5. Configure Bus Prescalers
+  // Clear Prescaler Bits first
+  RCC->CFGR &= ~(RCC_CFGR_PPRE1 | RCC_CFGR_PPRE2 | RCC_CFGR_ADCPRE);
+  // AHB = 1 (64MHz)
+  // APB1 = 2 (32MHz) -> Max 36MHz
+  // APB2 = 1 (64MHz)
+  // ADC = 8 (8MHz) -> Max 14MHz
+  RCC->CFGR |= (RCC_CFGR_PPRE1_DIV2 | RCC_CFGR_ADCPRE_DIV8);
+
+  // 6. Switch System Clock to PLL
+  RCC->CFGR |= RCC_CFGR_SW_PLL;
+  while ((RCC->CFGR & RCC_CFGR_SWS) != RCC_CFGR_SWS_PLL);
 }
 
 /**
@@ -347,79 +238,62 @@ void SystemClock_Config(void)
   */
 static void MX_ADC1_Init(void)
 {
+  // Enable ADC1 Clock
+  RCC->APB2ENR |= RCC_APB2ENR_ADC1EN;
 
-  /* USER CODE BEGIN ADC1_Init 0 */
+  // Reset ADC1
+  RCC->APB2RSTR |= RCC_APB2RSTR_ADC1RST;
+  RCC->APB2RSTR &= ~RCC_APB2RSTR_ADC1RST;
 
-  /* USER CODE END ADC1_Init 0 */
+  // 1. Set Prescaler (Already done in SystemClock_Config: /8 -> 8MHz)
 
-  ADC_ChannelConfTypeDef sConfig = {0};
+  // 2. Configure ADC1 CR1
+  // Scan Mode Enable
+  ADC1->CR1 |= ADC_CR1_SCAN;
 
-  /* USER CODE BEGIN ADC1_Init 1 */
+  // 3. Configure ADC1 CR2
+  // DMA Enable, External Trigger Enable (TIM3 TRGO), Align Right
+  ADC1->CR2 |= ADC_CR2_DMA | ADC_CR2_EXTTRIG;
+  
+  // Select External Trigger: TIM3 TRGO (0100) -> Bit 19:17 = 100
+  ADC1->CR2 &= ~ADC_CR2_EXTSEL;
+  ADC1->CR2 |= ADC_CR2_EXTSEL_2; 
 
-  /* USER CODE END ADC1_Init 1 */
+  // 4. Configure Sample Time
+  // Channel 0: 71.5 Cycles (SMP0 = 110)
+  // Channel 1: 71.5 Cycles (SMP1 = 110)
+  ADC1->SMPR2 &= ~(ADC_SMPR2_SMP0 | ADC_SMPR2_SMP1);
+  ADC1->SMPR2 |= (ADC_SMPR2_SMP0_2 | ADC_SMPR2_SMP0_1); // 110
+  ADC1->SMPR2 |= (ADC_SMPR2_SMP1_2 | ADC_SMPR2_SMP1_1); // 110
 
-  /** Common config
-  */
-  hadc1.Instance = ADC1;
-  hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
-  hadc1.Init.ContinuousConvMode = DISABLE;
-  hadc1.Init.DiscontinuousConvMode = DISABLE;
-  hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIGCONV_T3_TRGO;
-  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 2;
-  if (HAL_ADC_Init(&hadc1) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  // 5. Configure Sequence
+  // Length = 2 conversions (L = 1 -> 0001)
+  ADC1->SQR1 &= ~ADC_SQR1_L;
+  ADC1->SQR1 |= (1 << 20); // L=1 means 2 conversions
 
-  /** Configure Regular Channel
-  */
-  sConfig.Channel = ADC_CHANNEL_0;
-  sConfig.Rank = ADC_REGULAR_RANK_1;
-  sConfig.SamplingTime = ADC_SAMPLETIME_71CYCLES_5;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
+  // SQ1 = Channel 0
+  ADC1->SQR3 &= ~ADC_SQR3_SQ1;
+  ADC1->SQR3 |= (0 << 0);
 
-  /** Configure Regular Channel
-  */
-  sConfig.Channel = ADC_CHANNEL_1;
-  sConfig.Rank = ADC_REGULAR_RANK_2;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN ADC1_Init 2 */
+  // SQ2 = Channel 1
+  ADC1->SQR3 &= ~ADC_SQR3_SQ2;
+  ADC1->SQR3 |= (1 << 5);
 
-  /* USER CODE END ADC1_Init 2 */
-
-}
-
-/**
-  * @brief CRC Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_CRC_Init(void)
-{
-
-  /* USER CODE BEGIN CRC_Init 0 */
-
-  /* USER CODE END CRC_Init 0 */
-
-  /* USER CODE BEGIN CRC_Init 1 */
-
-  /* USER CODE END CRC_Init 1 */
-  hcrc.Instance = CRC;
-  if (HAL_CRC_Init(&hcrc) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN CRC_Init 2 */
-
-  /* USER CODE END CRC_Init 2 */
-
+  // 6. Enable ADC
+  ADC1->CR2 |= ADC_CR2_ADON;
+  
+  // Wait for ADC stabilization (approx 1us)
+  // At 64MHz, 1us = 64 cycles. A simple loop is sufficient.
+  for(volatile int i = 0; i < 100; i++); 
+  
+  // Calibration
+  // Reset Calibration
+  ADC1->CR2 |= ADC_CR2_RSTCAL;
+  while (ADC1->CR2 & ADC_CR2_RSTCAL);
+  
+  // Start Calibration
+  ADC1->CR2 |= ADC_CR2_CAL;
+  while (ADC1->CR2 & ADC_CR2_CAL);
 }
 
 /**
@@ -429,35 +303,16 @@ static void MX_CRC_Init(void)
   */
 static void MX_SPI2_Init(void)
 {
+  // Enable SPI2 Clock
+  RCC->APB1ENR |= RCC_APB1ENR_SPI2EN;
 
-  /* USER CODE BEGIN SPI2_Init 0 */
+  // Configure SPI2
+  // Master Mode, Baud Rate /2 (000), CPOL Low, CPHA 1 Edge, 8-bit, MSB First
+  // SSM=1, SSI=1 (Software Slave Management, Internal Slave Select High)
+  SPI2->CR1 = SPI_CR1_MSTR | SPI_CR1_SSM | SPI_CR1_SSI;
 
-  /* USER CODE END SPI2_Init 0 */
-
-  /* USER CODE BEGIN SPI2_Init 1 */
-
-  /* USER CODE END SPI2_Init 1 */
-  /* SPI2 parameter configuration*/
-  hspi2.Instance = SPI2;
-  hspi2.Init.Mode = SPI_MODE_MASTER;
-  hspi2.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi2.Init.DataSize = SPI_DATASIZE_8BIT;
-  hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
-  hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
-  hspi2.Init.NSS = SPI_NSS_HARD_OUTPUT;
-  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
-  hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
-  hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
-  hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
-  hspi2.Init.CRCPolynomial = 10;
-  if (HAL_SPI_Init(&hspi2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN SPI2_Init 2 */
-
-  /* USER CODE END SPI2_Init 2 */
-
+  // Enable SPI2
+  SPI2->CR1 |= SPI_CR1_SPE;
 }
 
 /**
@@ -467,42 +322,20 @@ static void MX_SPI2_Init(void)
   */
 static void MX_TIM3_Init(void)
 {
+  // Enable TIM3 Clock
+  RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;
 
-  /* USER CODE BEGIN TIM3_Init 0 */
+  // Configure Timer
+  // PSC = 124, ARR = 124
+  // Clock = 64MHz / 1 = 64MHz (APB1 x2)
+  // Freq = 64MHz / ((124+1) * (124+1)) = 64,000,000 / 15625 = 4096 Hz
+  TIM3->PSC = 124;
+  TIM3->ARR = 124;
 
-  /* USER CODE END TIM3_Init 0 */
-
-  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
-  TIM_MasterConfigTypeDef sMasterConfig = {0};
-
-  /* USER CODE BEGIN TIM3_Init 1 */
-
-  /* USER CODE END TIM3_Init 1 */
-  htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 124;
-  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 124;
-  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
-  if (HAL_TIM_Base_Init(&htim3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
-  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
-  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
-  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN TIM3_Init 2 */
-
-  /* USER CODE END TIM3_Init 2 */
-
+  // Configure TRGO (Trigger Output) on Update Event
+  // MMS = 010 (Update)
+  TIM3->CR2 &= ~TIM_CR2_MMS;
+  TIM3->CR2 |= TIM_CR2_MMS_1;
 }
 
 /**
@@ -512,46 +345,62 @@ static void MX_TIM3_Init(void)
   */
 static void MX_USART2_UART_Init(void)
 {
+  // Enable USART2 Clock
+  RCC->APB1ENR |= RCC_APB1ENR_USART2EN;
 
-  /* USER CODE BEGIN USART2_Init 0 */
+  // Configure Baud Rate
+  // APB1 Clock = 32MHz
+  // Baud = 230400
+  // USARTDIV = 32,000,000 / (16 * 230400) = 8.6805
+  // Mantissa = 8
+  // Fraction = 0.6805 * 16 = 10.88 -> 11 (0xB)
+  // BRR = 0x8B
+  USART2->BRR = 0x8B;
 
-  /* USER CODE END USART2_Init 0 */
-
-  /* USER CODE BEGIN USART2_Init 1 */
-
-  /* USER CODE END USART2_Init 1 */
-  huart2.Instance = USART2;
-  huart2.Init.BaudRate = 230400; // Lowered to 230400 for stability
-  huart2.Init.WordLength = UART_WORDLENGTH_8B;
-  huart2.Init.StopBits = UART_STOPBITS_1;
-  huart2.Init.Parity = UART_PARITY_NONE;
-  huart2.Init.Mode = UART_MODE_TX_RX;
-  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
-  if (HAL_UART_Init(&huart2) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART2_Init 2 */
-
-  /* USER CODE END USART2_Init 2 */
-
+  // Configure Control Register
+  // TE (Transmitter Enable), RE (Receiver Enable), UE (USART Enable)
+  USART2->CR1 = USART_CR1_TE | USART_CR1_RE | USART_CR1_UE;
 }
 
 /**
-  * Enable DMA controller clock
+  * @brief DMA Initialization Function
+  * @param None
+  * @retval None
   */
 static void MX_DMA_Init(void)
 {
+  // Enable DMA1 Clock
+  RCC->AHBENR |= RCC_AHBENR_DMA1EN;
 
-  /* DMA controller clock enable */
-  __HAL_RCC_DMA1_CLK_ENABLE();
+  // DMA1 Channel 1 (ADC1) Configuration
+  // Peripheral Address: &ADC1->DR
+  DMA1_Channel1->CPAR = (uint32_t)&ADC1->DR;
+  
+  // Memory Address: adc_buffer
+  DMA1_Channel1->CMAR = (uint32_t)adc_buffer;
+  
+  // Number of Data: ADC_BUF_LEN
+  DMA1_Channel1->CNDTR = ADC_BUF_LEN;
 
-  /* DMA interrupt init */
-  /* DMA1_Channel1_IRQn interrupt configuration */
-  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+  // Configuration
+  // Priority High (PL=10)
+  // Memory Size 16-bit (MSIZE=01)
+  // Peripheral Size 16-bit (PSIZE=01)
+  // Memory Increment (MINC=1)
+  // Circular Mode (CIRC=1)
+  // Transfer Error Interrupt (TEIE=1)
+  // Half Transfer Interrupt (HTIE=1)
+  // Transfer Complete Interrupt (TCIE=1)
+  // Enable DMA (EN=1) - Enable later? No, enable now.
+  DMA1_Channel1->CCR = DMA_CCR_PL_1 | DMA_CCR_MSIZE_0 | DMA_CCR_PSIZE_0 | 
+                       DMA_CCR_MINC | DMA_CCR_CIRC | 
+                       DMA_CCR_TEIE | DMA_CCR_HTIE | DMA_CCR_TCIE;
+  
+  DMA1_Channel1->CCR |= DMA_CCR_EN;
 
+  // Enable DMA1 Channel 1 Interrupt in NVIC
+  NVIC_EnableIRQ(DMA1_Channel1_IRQn);
+  NVIC_SetPriority(DMA1_Channel1_IRQn, 0);
 }
 
 /**
@@ -561,62 +410,62 @@ static void MX_DMA_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
-  GPIO_InitTypeDef GPIO_InitStruct = {0};
-  /* USER CODE BEGIN MX_GPIO_Init_1 */
+  // Enable GPIOA, GPIOC Clocks
+  RCC->APB2ENR |= RCC_APB2ENR_IOPAEN | RCC_APB2ENR_IOPCEN;
 
-  /* USER CODE END MX_GPIO_Init_1 */
+  // PA5 (LD2) -> Output Push-Pull, 2MHz
+  // CNF5=00, MODE5=10
+  GPIOA->CRL &= ~(GPIO_CRL_CNF5 | GPIO_CRL_MODE5);
+  GPIOA->CRL |= GPIO_CRL_MODE5_1;
 
-  /* GPIO Ports Clock Enable */
-  __HAL_RCC_GPIOC_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
+  // PA2 (USART2_TX) -> Alternate Function Push-Pull, 10MHz
+  // CNF2=10, MODE2=01
+  GPIOA->CRL &= ~(GPIO_CRL_CNF2 | GPIO_CRL_MODE2);
+  GPIOA->CRL |= (GPIO_CRL_CNF2_1 | GPIO_CRL_MODE2_0);
 
-  /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LD2_GPIO_Port, LD2_Pin, GPIO_PIN_RESET);
+  // PA3 (USART2_RX) -> Input Floating (Default) or Pull-up
+  // CNF3=01 (Floating), MODE3=00 (Input)
+  GPIOA->CRL &= ~(GPIO_CRL_CNF3 | GPIO_CRL_MODE3);
+  GPIOA->CRL |= GPIO_CRL_CNF3_0;
 
-  /*Configure GPIO pin : B1_Pin */
-  GPIO_InitStruct.Pin = B1_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+  // PA0, PA1 (ADC) -> Analog Input
+  // CNF0=00, MODE0=00
+  GPIOA->CRL &= ~(GPIO_CRL_CNF0 | GPIO_CRL_MODE0);
+  GPIOA->CRL &= ~(GPIO_CRL_CNF1 | GPIO_CRL_MODE1);
 
-  /*Configure GPIO pin : LD2_Pin */
-  GPIO_InitStruct.Pin = LD2_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LD2_GPIO_Port, &GPIO_InitStruct);
-
-  /* EXTI interrupt init*/
-  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
-
-  /* USER CODE BEGIN MX_GPIO_Init_2 */
-
-  /* USER CODE END MX_GPIO_Init_2 */
+  // PC13 (Button) -> Input Floating
+  GPIOC->CRH &= ~(GPIO_CRH_CNF13 | GPIO_CRH_MODE13);
+  GPIOC->CRH |= GPIO_CRH_CNF13_0;
 }
 
-/* USER CODE BEGIN 4 */
-#if USE_DMA
-void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef* hadc) {
-    if (hadc->Instance == ADC1) {
-        fft_data_ready = 1; // First half ready
-    }
-}
-
-void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc) {
-    if (hadc->Instance == ADC1) {
-        fft_data_ready = 2; // Second half ready
-    }
-}
-
-void HAL_ADC_ErrorCallback(ADC_HandleTypeDef *hadc)
+// DMA Interrupt Handler
+void DMA1_Channel1_IRQHandler(void)
 {
-    // Toggle LD2 fast to indicate error
-    HAL_GPIO_TogglePin(LD2_GPIO_Port, LD2_Pin);
+  if (DMA1->ISR & DMA_ISR_HTIF1) {
+    DMA1->IFCR = DMA_IFCR_CHTIF1;
+    fft_data_ready = 1; // First Half Ready
+  }
+  if (DMA1->ISR & DMA_ISR_TCIF1) {
+    DMA1->IFCR = DMA_IFCR_CTCIF1;
+    fft_data_ready = 2; // Second Half Ready
+  }
 }
-#endif
+
+void UART_Send(uint8_t *data, uint16_t len)
+{
+  for (uint16_t i = 0; i < len; i++) {
+    while (!(USART2->SR & USART_SR_TXE));
+    USART2->DR = data[i];
+  }
+}
+
+void SPI_Send(uint8_t *data, uint16_t len)
+{
+  for (uint16_t i = 0; i < len; i++) {
+    while (!(SPI2->SR & SPI_SR_TXE));
+    SPI2->DR = data[i];
+  }
+}
 
 void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* feat) {
     // F1: Peak Frequency Magnitude (Global Peak)
@@ -630,35 +479,23 @@ void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* 
     feat->F1_freq = (float32_t)max_idx * 4096.0f / (float32_t)FFT_LEN;
     
     // F2: Sideband Magnitude (Targeted Search using 1/7 Rule)
-    // 1/7 Rule: Mechanical Frequency (fr) = Electrical Frequency (fs) / 7
-    // Sidebands appear at fs +/- k * fr (where k = 1, 3, 5...)
-    // We search around these candidate positions relative to F1.
-    
     float32_t sb_max = 0.0f;
     uint32_t sb_idx = 0;
     
-    // Calculate Machine Frequency Index (fr_idx)
-    // max_idx is F1 (fs). fr_idx = fs / 7
     uint32_t fr_idx = max_idx / 7;
-    
-    // Candidate multipliers: 1 (Shaft/Unbalance), 3 (Outer Race), 5 (Inner Race)
     int multipliers[] = {1, 3, 5};
     
     for (int k = 0; k < 3; k++) {
-        int dist_idx = fr_idx * multipliers[k]; // Distance from F1
-        
-        // Check both Left (-) and Right (+) sidebands
+        int dist_idx = fr_idx * multipliers[k];
         int signs[] = {-1, 1};
         for (int s = 0; s < 2; s++) {
             int center_idx = (int)max_idx + (dist_idx * signs[s]);
             
-            // Search +/- 5 index around the candidate center to catch offset peaks
+            // Search +/- 5 index around the candidate center
             for (int offset = -5; offset <= 5; offset++) {
                 int target_idx = center_idx + offset;
                 
-                // Boundary Check
                 if (target_idx > 0 && target_idx < (FFT_LEN / 2)) {
-                    // Skip F1 itself (just in case)
                     if (target_idx == max_idx) continue;
                     
                     if (fft_mag[target_idx] > sb_max) {
@@ -671,9 +508,8 @@ void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* 
     }
     
     feat->F2_sideband = sb_max;
-    feat->F2_index = (float32_t)sb_idx; // Store Index for SPI
+    feat->F2_index = (float32_t)sb_idx;
     
-    // Calculate F2 Frequency
     if (sb_max > 0.0f) {
         feat->F2_freq = (float32_t)sb_idx * 4096.0f / (float32_t)FFT_LEN;
     } else {
@@ -681,7 +517,6 @@ void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* 
     }
 
     // F3: 3rd Harmonic Magnitude
-    // Harmonic Index = 3 * Fundamental Index
     int h3_idx = max_idx * 3;
     if (h3_idx < (FFT_LEN / 2)) {
         feat->F3_harmonic = fft_mag[h3_idx];
@@ -692,7 +527,6 @@ void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* 
     }
 
     // F4: RMS (Time Domain)
-    // sqrt( sum(x^2) / N )
     float32_t sum_sq = 0.0f;
     for (int i = 0; i < FFT_LEN; i++) {
         sum_sq += time_sig[i] * time_sig[i];
@@ -700,9 +534,7 @@ void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* 
     float32_t mean_sq = sum_sq / (float32_t)FFT_LEN;
     arm_sqrt_f32(mean_sq, &feat->F4_rms);
 
-    // F5: THD (Total Harmonic Distortion)
-    // sqrt( sum(Harmonic_Mag^2) ) / Fundamental_Mag
-    // Harmonics: 2nd to 5th
+    // F5: THD
     float32_t harm_energy = 0.0f;
     for (int h = 2; h <= 5; h++) {
         int h_idx = max_idx * h;
@@ -721,35 +553,10 @@ void Calculate_Features(float32_t* fft_mag, float32_t* time_sig, FeaturePacket* 
     }
 }
 
-/* USER CODE END 4 */
-
-/**
-  * @brief  This function is executed in case of error occurrence.
-  * @retval None
-  */
 void Error_Handler(void)
 {
-  /* USER CODE BEGIN Error_Handler_Debug */
-  /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   while (1)
   {
   }
-  /* USER CODE END Error_Handler_Debug */
 }
-#ifdef USE_FULL_ASSERT
-/**
-  * @brief  Reports the name of the source file and the source line number
-  *         where the assert_param error has occurred.
-  * @param  file: pointer to the source file name
-  * @param  line: assert_param error line source number
-  * @retval None
-  */
-void assert_failed(uint8_t *file, uint32_t line)
-{
-  /* USER CODE BEGIN 6 */
-  /* User can add his own implementation to report the file name and line number,
-     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
-  /* USER CODE END 6 */
-}
-#endif /* USE_FULL_ASSERT */
